@@ -1,0 +1,31 @@
+services:
+  convex:
+    image: ghcr.io/get-convex/convex-backend:latest
+    container_name: rancang-convex-dev
+    env_file:
+      - .env.convex
+    ports:
+      - "3230:3210"   # Backend API
+      - "3231:3211"   # Site (auth callbacks)
+    volumes:
+      - rancang-convex-data:/convex/data
+    environment:
+      - CONVEX_ADMIN_KEY=${CONVEX_ADMIN_KEY}
+      - CONVEX_CLOUD_ORIGIN=http://localhost:3230
+      - CONVEX_SITE_ORIGIN=http://localhost:3231
+      - DO_NOT_REQUIRE_SSL=true
+
+  convex-dashboard:
+    image: ghcr.io/get-convex/convex-dashboard:latest
+    container_name: rancang-convex-dashboard
+    ports:
+      - "6793:6791"
+    environment:
+      - NEXT_PUBLIC_DEPLOYMENT_URL=http://localhost:3230
+      - NEXT_PUBLIC_LOAD_MONACO_INTERNALLY=true
+    depends_on:
+      - convex
+
+volumes:
+  rancang-convex-data:
+    name: rancang-convex-data
