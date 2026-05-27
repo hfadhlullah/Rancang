@@ -10,7 +10,6 @@ services:
     volumes:
       - rancang-convex-data:/convex/data
     environment:
-      - CONVEX_ADMIN_KEY=${CONVEX_ADMIN_KEY}
       - CONVEX_CLOUD_ORIGIN=http://localhost:3230
       - CONVEX_SITE_ORIGIN=http://localhost:3231
       - DO_NOT_REQUIRE_SSL=true
