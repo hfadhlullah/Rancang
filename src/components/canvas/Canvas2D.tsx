@@ -357,6 +357,56 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
   }, [selected, plan, onPlanChange]);
 
   // ---------- Render ----------
+
+  function renderGhostFloor() {
+    if (activeFloor === 0) return null;
+    const ghostFloor = activeFloor - 1;
+    const ghostWalls = Object.values(plan.walls).filter((w) => (w.floor ?? 0) === ghostFloor);
+    const ghostRooms = Object.values(plan.rooms).filter((r) => (r.floor ?? 0) === ghostFloor);
+    const elems: React.ReactElement[] = [];
+
+    for (const room of ghostRooms) {
+      const pts = room.vertexIds
+        .map((id) => plan.vertices[id])
+        .filter(Boolean)
+        .flatMap((v) => [v.x, v.y]);
+      if (pts.length < 6) continue;
+      elems.push(
+        <Line
+          key={`ghost-room-${room.id}`}
+          closed
+          points={pts}
+          fill={room.color ?? "#dbeafe"}
+          opacity={0.12}
+          strokeWidth={0}
+          listening={false}
+        />
+      );
+    }
+
+    for (const wall of ghostWalls) {
+      const sv = plan.vertices[wall.startId];
+      const ev = plan.vertices[wall.endId];
+      if (!sv || !ev) continue;
+      const thick = wall.thickness * GRID_PX;
+      const rect = wallRect(sv.x, sv.y, ev.x, ev.y, thick);
+      const pts = rect.flatMap((p) => [p.x, p.y]);
+      elems.push(
+        <Line
+          key={`ghost-wall-${wall.id}`}
+          closed
+          points={pts}
+          fill="#94a3b8"
+          opacity={0.2}
+          strokeWidth={0}
+          listening={false}
+        />
+      );
+    }
+
+    return elems;
+  }
+
   function renderGrid() {
     const EXTENT = 6000;
     const elems: React.ReactElement[] = [];
@@ -693,6 +743,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
             fill="transparent"
           />
           {renderGrid()}
+          {renderGhostFloor()}
           {renderRooms()}
           {renderWalls()}
           {renderOpenings()}

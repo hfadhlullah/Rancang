@@ -9,11 +9,41 @@ import { Loader2, Sparkles, Send, RotateCcw } from "lucide-react";
 interface Props {
   plan: Plan;
   onPlanChange: (plan: Plan) => void;
+  projectId: string;
 }
 
 type UserMsg = { role: "user"; text: string };
-type AssistantMsg = { role: "assistant"; plan: Plan; planJson: string; summary: string };
+// plan is not persisted (large) — restored from onPlanChange flow; planJson + summary are persisted
+type AssistantMsg = { role: "assistant"; plan?: Plan; planJson: string; summary: string };
 type ChatMsg = UserMsg | AssistantMsg;
+
+// Persisted shape (no Plan object)
+type PersistedMsg =
+  | { role: "user"; text: string }
+  | { role: "assistant"; planJson: string; summary: string };
+
+interface PersistedState {
+  messages: PersistedMsg[];
+  lastGenJson: string | null;
+}
+
+function storageKey(projectId: string) {
+  return `rancang-chat-${projectId}`;
+}
+
+function loadState(projectId: string): PersistedState {
+  try {
+    const raw = localStorage.getItem(storageKey(projectId));
+    if (raw) return JSON.parse(raw) as PersistedState;
+  } catch {}
+  return { messages: [], lastGenJson: null };
+}
+
+function saveState(projectId: string, state: PersistedState) {
+  try {
+    localStorage.setItem(storageKey(projectId), JSON.stringify(state));
+  } catch {}
+}
 
 function planSummary(plan: Plan): string {
   const rooms = Object.values(plan.rooms);
@@ -32,17 +62,32 @@ function planSummary(plan: Plan): string {
   return parts.join(" · ");
 }
 
-export function GeneratePanel({ plan, onPlanChange }: Props) {
+export function GeneratePanel({ plan, onPlanChange, projectId }: Props) {
   const generate = useAction(api.generate.generate);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastGenJson, setLastGenJson] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Load once on mount / projectId change
+  useEffect(() => {
+    const state = loadState(projectId);
+    setMessages(state.messages as ChatMsg[]);
+    setLastGenJson(state.lastGenJson);
+  }, [projectId]);
 
-  // Only pass user messages as history — plan JSON is sent separately as currentPlanJson.
-  // Putting plan JSON in assistant turns causes context blowup and model outputs prose/YAML.
+  // Save explicitly — not via effect (effect fires with stale empty state on first render)
+  function persist(msgs: ChatMsg[], genJson: string | null) {
+    const persisted: PersistedMsg[] = msgs.map((m) =>
+      m.role === "user"
+        ? { role: "user", text: m.text }
+        : { role: "assistant", planJson: m.planJson, summary: m.summary }
+    );
+    saveState(projectId, { messages: persisted, lastGenJson: genJson });
+  }
+
   function buildLLMHistory(): Array<{ role: "user" | "assistant"; content: string }> {
     return messages
       .filter((m): m is UserMsg => m.role === "user")
@@ -57,7 +102,8 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
     setRunning(true);
 
     const userMsg: UserMsg = { role: "user", text };
-    setMessages((prev) => [...prev, userMsg]);
+    const msgsWithUser = [...messages, userMsg];
+    setMessages(msgsWithUser);
 
     const history = buildLLMHistory();
 
@@ -65,21 +111,25 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
       const result = (await generate({
         prompt: text,
         currentPlanJson: JSON.stringify(plan),
+        lastGenJson: lastGenJson ?? undefined,
         chatHistory: history,
       })) as unknown as { plan: Plan; planJson: string };
 
+      const newGenJson = result.planJson;
+      setLastGenJson(newGenJson);
       const assistantMsg: AssistantMsg = {
         role: "assistant",
         plan: result.plan,
         planJson: result.planJson,
         summary: planSummary(result.plan),
       };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const finalMsgs = [...msgsWithUser, assistantMsg];
+      setMessages(finalMsgs);
+      persist(finalMsgs, newGenJson);
       onPlanChange(result.plan);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
-      // Remove the user message we optimistically added
-      setMessages((prev) => prev.slice(0, -1));
+      setMessages(messages); // rollback to pre-send state
     } finally {
       setRunning(false);
     }
@@ -96,13 +146,14 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
     setMessages([]);
     setError(null);
     setInput("");
+    setLastGenJson(null);
+    saveState(projectId, { messages: [], lastGenJson: null });
   }
 
   function handleRestorePlan(msg: AssistantMsg) {
-    onPlanChange(msg.plan);
+    if (msg.plan) onPlanChange(msg.plan);
   }
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, running]);
@@ -111,7 +162,6 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
         <h2 className="font-semibold text-sm flex items-center gap-1.5">
           <Sparkles size={14} />
@@ -128,7 +178,6 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
         )}
       </div>
 
-      {/* Chat messages */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 min-h-0">
         {isEmpty && (
           <div className="text-center text-xs text-muted-foreground pt-6 space-y-2">
@@ -151,12 +200,14 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
                   <span className="font-medium">Plan generated</span>
                 </div>
                 <p className="text-foreground/80">{msg.summary}</p>
-                <button
-                  onClick={() => handleRestorePlan(msg)}
-                  className="text-[10px] text-primary hover:underline"
-                >
-                  Restore this version
-                </button>
+                {msg.plan && (
+                  <button
+                    onClick={() => handleRestorePlan(msg as AssistantMsg)}
+                    className="text-[10px] text-primary hover:underline"
+                  >
+                    Restore this version
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -180,7 +231,6 @@ export function GeneratePanel({ plan, onPlanChange }: Props) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
       <div className="px-3 pb-3 pt-2 border-t shrink-0">
         <div className="flex items-end gap-2">
           <textarea

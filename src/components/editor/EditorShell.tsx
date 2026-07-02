@@ -413,7 +413,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
               <RoomEditor plan={plan} onPlanChange={setPlan} />
             )}
             {rightPanel === "generate" && (
-              <GeneratePanel plan={plan} onPlanChange={setPlan} />
+              <GeneratePanel plan={plan} onPlanChange={setPlan} projectId={projectId} />
             )}
           </aside>
         )}

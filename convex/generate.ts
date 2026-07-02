@@ -24,6 +24,21 @@ const ROOM_TYPES = [
   "corridor", "storage", "garage", "outdoor", "other",
 ] as const;
 
+const ITER_SYSTEM_PROMPT = `You are an architectural plan editor. You receive an EXISTING floor plan JSON and a single modification request. Your job is to make ONLY the minimum necessary changes to satisfy the request.
+
+RULES — READ CAREFULLY:
+1. Output the COMPLETE plan JSON with ALL existing elements included.
+2. Copy every vertex, wall, opening, and room EXACTLY as-is unless it must change to satisfy the request.
+3. Do NOT rename rooms that are not mentioned. Do NOT move walls that are not related to the change.
+4. Do NOT add rooms the user did not ask for. Do NOT remove rooms unless explicitly asked.
+5. Preserve the exact same "floors" count unless the user asks to add/remove a floor.
+6. If resizing a room: move its boundary walls and update the shared vertices. Adjust adjacent rooms' vertexIds to match.
+7. If adding a room: insert new vertices, walls, openings. Fit it inside the existing footprint where space allows.
+8. ALL walls must be strictly horizontal (same y) or strictly vertical (same x). No diagonals.
+9. Keep existing IDs exactly as they are in the input. Use new unique IDs only for truly new elements.
+
+Return ONLY valid JSON matching the same schema. No markdown, no comments.`;
+
 const GEN_SYSTEM_PROMPT = `You are an architectural layout generator. Given a short description of a residential project, design a complete, buildable 2D floor plan.
 
 Rules:
@@ -199,10 +214,11 @@ const ChatMessageSchema = v.object({
 export const generate = action({
   args: {
     prompt: v.string(),
-    currentPlanJson: v.optional(v.string()),
+    currentPlanJson: v.optional(v.string()),   // app Plan format — used for ppm/wallHeight
+    lastGenJson: v.optional(v.string()),        // raw GenSchema JSON from last generation — used as LLM context
     chatHistory: v.optional(v.array(ChatMessageSchema)),
   },
-  handler: async (ctx, { prompt, currentPlanJson, chatHistory }) => {
+  handler: async (ctx, { prompt, currentPlanJson, lastGenJson, chatHistory }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
@@ -213,22 +229,9 @@ export const generate = action({
     const ppm = current.metadata?.pixelsPerMeter ?? DEFAULT_PLAN.metadata.pixelsPerMeter;
     const wallHeight = current.metadata?.wallHeight ?? DEFAULT_PLAN.metadata.wallHeight;
 
-    const isIteration = chatHistory && chatHistory.length > 0;
-
-    // Build a single user message. For iterations, include the current plan JSON + prior requests.
-    // We never put plan JSON in assistant history turns (causes context blowup + prose output).
-    const previousRequests = chatHistory
-      ? chatHistory.filter((m) => m.role === "user").map((m, i) => `${i + 1}. ${m.content}`).join("\n")
-      : "";
-
-    const userContent = isIteration
-      ? `CURRENT FLOOR PLAN JSON (already generated):\n${currentPlanJson ?? "{}"}\n\nPREVIOUS MODIFICATION REQUESTS ALREADY APPLIED:\n${previousRequests}\n\nNEW MODIFICATION REQUEST:\n${prompt}\n\nApply the new modification to the current plan. Keep all rooms, walls, and openings that are NOT affected by this change. Return ONLY the complete updated plan JSON.`
-      : `PROJECT DESCRIPTION:\n${prompt}\n\nFollow all rules above exactly. Include ALL requested rooms (foyer, carport, garden, staircase if multi-floor). Generate the floor plan JSON now.`;
-
-    const messages = [
-      { role: "system" as const, content: GEN_SYSTEM_PROMPT },
-      { role: "user" as const, content: userContent },
-    ];
+    // Iterate whenever a plan already exists on canvas, regardless of chatHistory length.
+    const hasExistingPlan = !!currentPlanJson && Object.keys(JSON.parse(currentPlanJson).walls ?? {}).length > 0;
+    const isIteration = hasExistingPlan;
 
     function tryParse(text: string) {
       try {
@@ -238,7 +241,66 @@ export const generate = action({
       }
     }
 
-    const genOpts = { responseFormat: "json" as const, temperature: 0.4, maxTokens: 8192 };
+    // Build a human-readable summary from app Plan format (rooms/walls are objects, not arrays)
+    function buildPlanSummary(planJson: string): string {
+      try {
+        const g = JSON.parse(planJson);
+        // Support both array (GenSchema) and record (app Plan) formats
+        const roomsArr = Array.isArray(g.rooms) ? g.rooms : Object.values(g.rooms ?? {});
+        const wallsArr = Array.isArray(g.walls) ? g.walls : Object.values(g.walls ?? {});
+        const vertsArr = Array.isArray(g.vertices) ? g.vertices : Object.values(g.vertices ?? {});
+        const rooms: string[] = (roomsArr as { id: string; name: string; type: string; floor?: number }[])
+          .map((r) => `  - ${r.name} (${r.type}, floor ${r.floor ?? 0})`);
+        const floors = g.floors ?? g.metadata?.floors ?? 1;
+        return `Floors: ${floors}\nRooms (${rooms.length}):\n${rooms.join("\n")}\nWalls: ${wallsArr.length}, Vertices: ${vertsArr.length}`;
+      } catch {
+        return "(could not parse plan summary)";
+      }
+    }
+
+    let systemPrompt: string;
+    let userContent: string;
+
+    if (isIteration) {
+      // chatHistory contains only prior user messages (current prompt is NOT in it yet)
+      const previousRequests = (chatHistory ?? [])
+        .filter((m) => m.role === "user")
+        .map((m, i) => `  ${i + 1}. ${m.content}`)
+        .join("\n");
+
+      // Use current canvas plan as baseline — reflects manual edits and restored snapshots.
+      // The app plan uses nanoid IDs; tell the AI to reassign short IDs in its output (buildPlanFromGenerated remaps them anyway).
+      const planSummary = buildPlanSummary(currentPlanJson!);
+      systemPrompt = ITER_SYSTEM_PROMPT;
+      userContent = [
+        "EXISTING PLAN SUMMARY (current canvas state):",
+        planSummary,
+        "",
+        "CURRENT PLAN JSON (base your changes on this exact plan):",
+        currentPlanJson,
+        "",
+        "NOTE: The plan above uses long IDs. In your output, reassign short IDs (v1, w1, r1, o1...) — they will be remapped automatically.",
+        "",
+        previousRequests ? `PREVIOUSLY APPLIED CHANGES:\n${previousRequests}\n` : "",
+        `MODIFICATION REQUEST: ${prompt}`,
+        "",
+        "Apply ONLY this modification. Preserve everything else exactly.",
+      ].join("\n");
+    } else {
+      systemPrompt = GEN_SYSTEM_PROMPT;
+      userContent = `PROJECT DESCRIPTION:\n${prompt}\n\nFollow all rules above exactly. Include ALL requested rooms (foyer, carport, garden, staircase if multi-floor). Generate the floor plan JSON now.`;
+    }
+
+    const messages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userContent },
+    ];
+
+    const genOpts = {
+      responseFormat: "json" as const,
+      temperature: isIteration ? 0.2 : 0.4,  // lower temp for surgical edits
+      maxTokens: 8192,
+    };
     let raw = await llm.complete(messages, genOpts);
     let parsed = tryParse(raw);
 
