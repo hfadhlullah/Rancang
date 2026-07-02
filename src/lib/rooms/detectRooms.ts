@@ -13,7 +13,7 @@ const AUTO_COLORS = [
  */
 /** Merge wall endpoints that are within SNAP_PX of each other into a single vertex. */
 function mergeCloseVertices(plan: Plan): Plan {
-  const SNAP_PX = 15;
+  const SNAP_PX = 3; // only merge truly coincident vertices (float drift), not legitimately close ones
   let result = plan;
   let dirty = true;
 
@@ -29,14 +29,11 @@ function mergeCloseVertices(plan: Plan): Plan {
         // Keep a, redirect all wall references from b to a
         const newWalls = { ...result.walls };
         for (const [wid, wall] of Object.entries(newWalls)) {
-          if (wall.startId === b.id && wall.endId === a.id) { delete newWalls[wid]; continue; }
-          if (wall.endId === b.id && wall.startId === a.id) { delete newWalls[wid]; continue; }
-          if (wall.startId === b.id || wall.endId === b.id) {
-            newWalls[wid] = {
-              ...wall,
-              startId: wall.startId === b.id ? a.id : wall.startId,
-              endId: wall.endId === b.id ? a.id : wall.endId,
-            };
+          const newStart = wall.startId === b.id ? a.id : wall.startId;
+          const newEnd = wall.endId === b.id ? a.id : wall.endId;
+          if (newStart === newEnd) { delete newWalls[wid]; continue; } // self-loop → drop
+          if (newStart !== wall.startId || newEnd !== wall.endId) {
+            newWalls[wid] = { ...wall, startId: newStart, endId: newEnd };
           }
         }
         const newVertices = { ...result.vertices };

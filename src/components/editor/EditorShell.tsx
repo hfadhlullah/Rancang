@@ -151,11 +151,11 @@ export function EditorShell({ projectId }: { projectId: string }) {
     [scheduleSave]
   );
 
-  // Auto-detect rooms from closed wall loops (2D canvas)
+  // Auto-detect rooms from closed wall loops (2D canvas only — Editor3D runs its own)
   const planRef = useRef(plan);
   planRef.current = plan;
   useEffect(() => {
-    if (!initialized) return;
+    if (!initialized || viewMode === "3d-edit") return;
     const p = planRef.current;
     const updated = reconcileAutoRooms(p);
     const wallsSame = JSON.stringify(Object.keys(updated.walls).sort()) === JSON.stringify(Object.keys(p.walls).sort());
