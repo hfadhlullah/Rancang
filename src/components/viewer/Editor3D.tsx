@@ -741,9 +741,13 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
     }
     if (tool === "select") {
       e.stopPropagation();
+      const alreadySelected = selected?.type === "wall" && selected.id === wallId;
       setSelected({ type: "wall", id: wallId });
-      const p = groundPointFromEvent(e);
-      pendingWallDrag.current = { id: wallId, fromX: p.x, fromY: p.y };
+      // Drag only allowed if wall was already selected (second click+hold)
+      if (alreadySelected) {
+        const p = groundPointFromEvent(e);
+        pendingWallDrag.current = { id: wallId, fromX: p.x, fromY: p.y };
+      }
     }
   }
 
