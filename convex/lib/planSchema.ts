@@ -4,6 +4,7 @@ export const VertexSchema = z.object({
   id: z.string(),
   x: z.number(),
   y: z.number(),
+  floor: z.number().optional(),
 });
 
 export const WallSchema = z.object({
@@ -11,6 +12,7 @@ export const WallSchema = z.object({
   startId: z.string(),
   endId: z.string(),
   thickness: z.number().default(0.2),
+  floor: z.number().optional(),
 });
 
 export const OpeningSchema = z.object({
@@ -21,6 +23,7 @@ export const OpeningSchema = z.object({
   width: z.number(),
   height: z.number(),
   swingDirection: z.enum(["left", "right"]).optional(),
+  floor: z.number().optional(),
 });
 
 export const RoomSchema = z.object({
@@ -41,6 +44,7 @@ export const RoomSchema = z.object({
   vertexIds: z.array(z.string()),
   area: z.number().optional(),
   color: z.string().optional(),
+  floor: z.number().optional(),
 });
 
 export const PlanMetadataSchema = z.object({
@@ -49,6 +53,7 @@ export const PlanMetadataSchema = z.object({
   pixelsPerMeter: z.number(),
   wallHeight: z.number(),
   northAngle: z.number().optional(),
+  floors: z.number().optional(),
 });
 
 export const PlanSchema = z.object({

@@ -9,6 +9,7 @@ export interface Vertex {
   id: VertexId;
   x: number; // meters
   y: number; // meters
+  floor?: number; // 0-indexed, default 0
 }
 
 export interface Wall {
@@ -16,6 +17,7 @@ export interface Wall {
   startId: VertexId;
   endId: VertexId;
   thickness: number; // meters, default 0.2
+  floor?: number; // 0-indexed, default 0
 }
 
 export type OpeningType = "door" | "window";
@@ -30,6 +32,7 @@ export interface Opening {
   height: number; // meters
   /** For doors: which side the door swings (relative to wall direction) */
   swingDirection?: "left" | "right";
+  floor?: number; // 0-indexed, default 0
 }
 
 export type RoomType =
@@ -53,6 +56,7 @@ export interface Room {
   /** Computed area in m² — recalculated on save, not edited directly */
   area?: number;
   color?: string; // hex, for canvas fill
+  floor?: number; // 0-indexed, default 0
 }
 
 export interface PlanMetadata {
@@ -66,6 +70,8 @@ export interface PlanMetadata {
   wallHeight: number;
   /** North direction in degrees (0 = up) */
   northAngle?: number;
+  /** Total number of floors, default 1 */
+  floors?: number;
 }
 
 export interface Plan {

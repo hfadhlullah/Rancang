@@ -9,6 +9,9 @@ services:
       - "3211:3211"   # Site (auth callbacks) — host port must match container port so OIDC discovery URL resolves both from browser and inside the container
     volumes:
       - rancang-convex-data:/convex/data
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:

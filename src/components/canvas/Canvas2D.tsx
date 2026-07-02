@@ -26,6 +26,7 @@ interface Props {
   onPlanChange: (plan: Plan) => void;
   tool: DrawingTool;
   onToolChange: (tool: DrawingTool) => void;
+  activeFloor: number;
 }
 
 type WallDraft = {
@@ -46,11 +47,12 @@ type SelectedElement =
   | { type: "vertex"; id: string }
   | { type: "wall"; id: string }
   | { type: "opening"; id: string }
+  | { type: "room"; id: string }
   | null;
 
 type WallHighlight = { wallId: string; t: number; projX: number; projY: number } | null;
 
-export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
+export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }: Props) {
   const stageRef = useRef<Konva.Stage>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
@@ -70,8 +72,14 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  const vertices = Object.values(plan.vertices);
-  const walls = Object.values(plan.walls);
+  const vertices = Object.values(plan.vertices).filter((v) => (v.floor ?? 0) === activeFloor);
+  const walls = Object.values(plan.walls).filter((w) => (w.floor ?? 0) === activeFloor);
+  // Floor-filtered plan snapshot for findClosestWall
+  const floorPlan = {
+    ...plan,
+    vertices: Object.fromEntries(vertices.map((v) => [v.id, v])),
+    walls: Object.fromEntries(walls.map((w) => [w.id, w])),
+  };
 
   function stageToCanvas(e: Konva.KonvaEventObject<MouseEvent>): Point {
     const stage = stageRef.current!;
@@ -106,7 +114,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
       setCursor(pt);
       setWallHighlight(null);
     } else if (tool === "door" || tool === "window") {
-      const snap = findClosestWall(plan, raw.x, raw.y, WALL_SNAP_DIST_PX);
+      const snap = findClosestWall(floorPlan, raw.x, raw.y, WALL_SNAP_DIST_PX);
       setWallHighlight(snap);
       setCursor(raw);
     } else {
@@ -152,7 +160,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
             ...plan,
             vertices: {
               ...plan.vertices,
-              [newId]: { id: newId, x: snapped.x, y: snapped.y },
+              [newId]: { id: newId, x: snapped.x, y: snapped.y, floor: activeFloor },
             },
           };
       onPlanChange(newPlan);
@@ -185,12 +193,12 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
     if (!pt.snapVertexId) {
       newPlan.vertices = {
         ...newPlan.vertices,
-        [endId]: { id: endId, x: pt.x, y: pt.y },
+        [endId]: { id: endId, x: pt.x, y: pt.y, floor: activeFloor },
       };
     }
     newPlan.walls = {
       ...newPlan.walls,
-      [wallId]: { id: wallId, startId: wallDraft.startVertexId, endId, thickness: 0.2 },
+      [wallId]: { id: wallId, startId: wallDraft.startVertexId, endId, thickness: 0.2, floor: activeFloor },
     };
     onPlanChange(newPlan);
     setWallDraft(null);
@@ -198,7 +206,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
 
   // ---- Opening (door/window) tool ----
   function handleOpeningClick(raw: Point, type: "door" | "window") {
-    const snap = findClosestWall(plan, raw.x, raw.y, WALL_SNAP_DIST_PX);
+    const snap = findClosestWall(floorPlan, raw.x, raw.y, WALL_SNAP_DIST_PX);
     if (!snap) return;
 
     const openingId = nanoid();
@@ -210,6 +218,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
       width: type === "door" ? 0.9 : 1.2,
       height: type === "door" ? 2.1 : 1.2,
       swingDirection: type === "door" ? "left" : undefined,
+      floor: activeFloor,
     };
     onPlanChange({
       ...plan,
@@ -254,6 +263,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
         type: "other" as const,
         vertexIds: roomDraft.vertexIds,
         color,
+        floor: activeFloor,
       };
       const newPlan = recalcRoomAreas({
         ...plan,
@@ -273,7 +283,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
         ...plan,
         vertices: {
           ...plan.vertices,
-          [vId]: { id: vId, x: snapped.x, y: snapped.y },
+          [vId]: { id: vId, x: snapped.x, y: snapped.y, floor: activeFloor },
         },
       };
       onPlanChange(newPlan);
@@ -335,6 +345,9 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
         } else if (selected.type === "opening") {
           const { [selected.id]: _, ...openings } = plan.openings;
           onPlanChange({ ...plan, openings });
+        } else if (selected.type === "room") {
+          const { [selected.id]: _, ...rooms } = plan.rooms;
+          onPlanChange(recalcRoomAreas({ ...plan, rooms }));
         }
         setSelected(null);
       }
@@ -345,35 +358,53 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
 
   // ---------- Render ----------
   function renderGrid() {
-    const cols = plan.metadata.width * GRID_PX;
-    const rows = plan.metadata.height * GRID_PX;
+    const EXTENT = 6000;
     const elems: React.ReactElement[] = [];
-    for (let x = 0; x <= cols; x += GRID_PX) {
-      elems.push(<Line key={`vg${x}`} points={[x, 0, x, rows]} stroke="#e5e7eb" strokeWidth={0.5} listening={false} />);
+    for (let x = -EXTENT; x <= EXTENT; x += GRID_PX) {
+      elems.push(<Line key={`vg${x}`} points={[x, -EXTENT, x, EXTENT]} stroke="#e5e7eb" strokeWidth={0.5} listening={false} />);
     }
-    for (let y = 0; y <= rows; y += GRID_PX) {
-      elems.push(<Line key={`hg${y}`} points={[0, y, cols, y]} stroke="#e5e7eb" strokeWidth={0.5} listening={false} />);
+    for (let y = -EXTENT; y <= EXTENT; y += GRID_PX) {
+      elems.push(<Line key={`hg${y}`} points={[-EXTENT, y, EXTENT, y]} stroke="#e5e7eb" strokeWidth={0.5} listening={false} />);
     }
     return elems;
   }
 
   function renderRooms() {
-    return Object.values(plan.rooms).map((room) => {
+    return Object.values(plan.rooms).filter((r) => (r.floor ?? 0) === activeFloor).map((room) => {
       const pts = room.vertexIds
         .map((id) => plan.vertices[id])
         .filter(Boolean)
         .flatMap((v) => [v.x, v.y]);
       if (pts.length < 6) return null;
+      const isSelected = selected?.type === "room" && selected.id === room.id;
       return (
         <Line
           key={room.id}
           closed
           points={pts}
           fill={room.color ?? "#dbeafe"}
-          opacity={0.35}
-          stroke={room.color ?? "#dbeafe"}
-          strokeWidth={0}
-          listening={false}
+          opacity={isSelected ? 0.6 : 0.35}
+          stroke={isSelected ? "#3b82f6" : (room.color ?? "#dbeafe")}
+          strokeWidth={isSelected ? 2.5 : 0}
+          draggable={tool === "select"}
+          onClick={(e) => { e.cancelBubble = true; setSelected({ type: "room", id: room.id }); }}
+          onMouseEnter={(e) => { if (tool === "select") e.target.getStage()!.container().style.cursor = "move"; }}
+          onMouseLeave={(e) => { e.target.getStage()!.container().style.cursor = "default"; }}
+          onDragStart={() => setSelected({ type: "room", id: room.id })}
+          onDragEnd={(e) => {
+            const line = e.target as Konva.Line;
+            const dx = line.x();
+            const dy = line.y();
+            line.position({ x: 0, y: 0 });
+            if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+            const newVertices = { ...plan.vertices };
+            for (const vId of room.vertexIds) {
+              if (newVertices[vId]) {
+                newVertices[vId] = { ...newVertices[vId], x: newVertices[vId].x + dx, y: newVertices[vId].y + dy };
+              }
+            }
+            onPlanChange(recalcRoomAreas({ ...plan, vertices: newVertices }));
+          }}
         />
       );
     });
@@ -420,8 +451,10 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
   }
 
   function renderOpenings() {
-    return Object.values(plan.openings).map((opening) => {
-      const wall = plan.walls[opening.wallId];
+    return Object.values(plan.openings)
+      .filter((o) => (o.floor ?? 0) === activeFloor)
+      .map((opening) => {
+      const wall = walls.find((w) => w.id === opening.wallId);
       if (!wall) return null;
       const sv = plan.vertices[wall.startId];
       const ev = plan.vertices[wall.endId];
@@ -441,8 +474,32 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
 
       const isSelected = selected?.type === "opening" && selected.id === opening.id;
 
+      const wallDx = ev.x - sv.x;
+      const wallDy = ev.y - sv.y;
+      const wallLen2 = wallDx * wallDx + wallDy * wallDy;
+
       return (
-        <Group key={opening.id}>
+        <Group
+          key={opening.id}
+          draggable={tool === "select"}
+          onClick={(e) => { e.cancelBubble = true; setSelected({ type: "opening", id: opening.id }); }}
+          onMouseEnter={(e) => { if (tool === "select") e.target.getStage()!.container().style.cursor = "grab"; }}
+          onMouseLeave={(e) => { e.target.getStage()!.container().style.cursor = "default"; }}
+          onDragStart={() => setSelected({ type: "opening", id: opening.id })}
+          onDragEnd={(e) => {
+            const g = e.target as Konva.Group;
+            const newCX = cx + g.x();
+            const newCY = cy + g.y();
+            g.position({ x: 0, y: 0 });
+            if (wallLen2 < 0.001) return;
+            const t = ((newCX - sv.x) * wallDx + (newCY - sv.y) * wallDy) / wallLen2;
+            const newPos = Math.max(0.05, Math.min(0.95, t));
+            onPlanChange({
+              ...plan,
+              openings: { ...plan.openings, [opening.id]: { ...opening, position: newPos } },
+            });
+          }}
+        >
           {/* Gap (erase wall) */}
           <Line
             points={[
@@ -459,7 +516,6 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
             fill="#f9fafb"
             stroke="#f9fafb"
             strokeWidth={1}
-            listening={false}
           />
           {/* Opening indicator */}
           {opening.type === "door" ? (
@@ -468,16 +524,15 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
                 points={[cx - ux * halfW, cy - uy * halfW, cx + ux * halfW, cy + uy * halfW]}
                 stroke={isSelected ? "#3b82f6" : "#374151"}
                 strokeWidth={1.5}
-                onClick={(e) => { e.cancelBubble = true; setSelected({ type: "opening", id: opening.id }); }}
+                hitStrokeWidth={10}
               />
-              {/* Door swing arc */}
               <Arc
                 x={cx - ux * halfW}
                 y={cy - uy * halfW}
                 innerRadius={0}
                 outerRadius={opening.width * GRID_PX}
                 angle={90}
-                rotation={angle + (opening.swingDirection === "right" ? 90 : 0)}
+                rotation={angle + (opening.swingDirection === "right" ? -90 : 0)}
                 stroke={isSelected ? "#3b82f6" : "#6b7280"}
                 strokeWidth={1}
                 fill="transparent"
@@ -490,7 +545,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
               points={[cx - ux * halfW, cy - uy * halfW, cx + ux * halfW, cy + uy * halfW]}
               stroke={isSelected ? "#3b82f6" : "#60a5fa"}
               strokeWidth={3}
-              onClick={(e) => { e.cancelBubble = true; setSelected({ type: "opening", id: opening.id }); }}
+              hitStrokeWidth={10}
             />
           )}
         </Group>
@@ -664,6 +719,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
               {plan.openings[selected.id]?.type === "door" ? "Door" : "Window"} selected — Delete to remove
             </>
           )}
+          {selected.type === "room" && `${plan.rooms[selected.id]?.name ?? "Room"} selected — drag to move, Delete to remove`}
         </div>
       )}
     </div>

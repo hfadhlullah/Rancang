@@ -44,4 +44,14 @@ export default defineSchema({
     constraints: v.optional(v.string()), // freeform text
     updatedAt: v.number(),
   }).index("by_project", ["projectId"]),
+
+  userSettings: defineTable({
+    userId: v.string(),
+    provider: v.string(), // "anthropic" | "requesty" | "local"
+    anthropicApiKey: v.optional(v.string()),
+    requestyApiKey: v.optional(v.string()),
+    requestyModel: v.optional(v.string()),
+    localLlmUrl: v.optional(v.string()),
+    localLlmModel: v.optional(v.string()),
+  }).index("by_user", ["userId"]),
 });

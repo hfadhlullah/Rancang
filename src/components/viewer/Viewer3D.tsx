@@ -147,22 +147,52 @@ function getPlanBounds(plan: Plan) {
   };
 }
 
-function FloorMesh({ plan }: { plan: Plan }) {
-  const bounds = getPlanBounds(plan);
+function FloorSlabs({ plan, wallHeight, viewFloor }: { plan: Plan; wallHeight: number; viewFloor: number | null }) {
+  const totalFloors = plan.metadata.floors ?? 1;
+  const slabs = useMemo(() => {
+    const result = [];
+    for (let f = 0; f < totalFloors; f++) {
+      if (viewFloor !== null && f !== viewFloor) continue;
+      const floorVerts = Object.values(plan.vertices).filter((v) => (v.floor ?? 0) === f);
+      const allVerts = floorVerts.length > 0 ? floorVerts : Object.values(plan.vertices);
+      if (allVerts.length === 0) continue;
+      let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+      for (const v of allVerts) {
+        const x = planToMeters(v.x);
+        const z = planToMeters(v.y);
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+      }
+      const cx = (minX + maxX) / 2;
+      const cz = (minZ + maxZ) / 2;
+      const w = maxX - minX;
+      const d = maxZ - minZ;
+      const y = f * wallHeight;
+      result.push({ f, cx, cz, w, d, y });
+    }
+    return result;
+  }, [plan, totalFloors, wallHeight, viewFloor]);
+
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[bounds.centerX, 0, bounds.centerY]} receiveShadow>
-      <planeGeometry args={[bounds.width, bounds.height]} />
-      <meshStandardMaterial color="#f3f4f6" />
-    </mesh>
+    <>
+      {slabs.map(({ f, cx, cz, w, d, y }) => (
+        <mesh key={f} rotation={[-Math.PI / 2, 0, 0]} position={[cx, y, cz]} receiveShadow>
+          <planeGeometry args={[w, d]} />
+          <meshStandardMaterial color={f === 0 ? "#e5e7eb" : "#d1d5db"} side={2} />
+        </mesh>
+      ))}
+    </>
   );
 }
 
-function Scene({ plan }: { plan: Plan }) {
+function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
   const ppm = plan.metadata.pixelsPerMeter;
   const wallHeight = plan.metadata.wallHeight;
 
   const walls = useMemo(() => {
-    return Object.values(plan.walls).map((wall) => {
+    return Object.values(plan.walls)
+      .filter((wall) => viewFloor === null || (wall.floor ?? 0) === viewFloor)
+      .map((wall) => {
       const sv = plan.vertices[wall.startId];
       const ev = plan.vertices[wall.endId];
       if (!sv || !ev) return null;
@@ -172,24 +202,29 @@ function Scene({ plan }: { plan: Plan }) {
       const ex = planToMeters(ev.x);
       const ey = planToMeters(ev.y);
       const thickness = wall.thickness;
+      const floorIndex = wall.floor ?? 0;
+      const yOffset = floorIndex * wallHeight;
       const openings = Object.values(plan.openings).filter((o) => o.wallId === wall.id);
 
       return (
-        <WallMesh
-          key={wall.id}
-          sx={sx} sy={sy}
-          ex={ex} ey={ey}
-          thickness={thickness}
-          height={wallHeight}
-          openings={openings}
-        />
+        <group key={wall.id} position={[0, yOffset, 0]}>
+          <WallMesh
+            sx={sx} sy={sy}
+            ex={ex} ey={ey}
+            thickness={thickness}
+            height={wallHeight}
+            openings={openings}
+          />
+        </group>
       );
     });
-  }, [plan]);
+  }, [plan, wallHeight, viewFloor]);
 
   // Room floor fills
   const rooms = useMemo(() => {
-    return Object.values(plan.rooms).map((room) => {
+    return Object.values(plan.rooms)
+      .filter((room) => viewFloor === null || (room.floor ?? 0) === viewFloor)
+      .map((room) => {
       const verts = room.vertexIds.map(id => plan.vertices[id]).filter(Boolean);
       if (verts.length < 3) return null;
       const shape = new THREE.Shape();
@@ -200,18 +235,20 @@ function Scene({ plan }: { plan: Plan }) {
       shape.closePath();
       const geometry = new THREE.ShapeGeometry(shape);
       const color = room.color ?? "#dbeafe";
+      const floorIndex = room.floor ?? 0;
+      const yOffset = floorIndex * wallHeight + 0.01;
       return (
         <mesh
           key={room.id}
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, 0.01, 0]}
+          position={[0, yOffset, 0]}
           geometry={geometry}
         >
           <meshStandardMaterial color={color} opacity={0.4} transparent />
         </mesh>
       );
     });
-  }, [plan]);
+  }, [plan, viewFloor]);
 
   const hasContent = Object.keys(plan.walls).length > 0;
 
@@ -224,7 +261,7 @@ function Scene({ plan }: { plan: Plan }) {
         castShadow
         shadow-mapSize={[1024, 1024]}
       />
-      <FloorMesh plan={plan} />
+      <FloorSlabs plan={plan} wallHeight={wallHeight} viewFloor={viewFloor} />
       {rooms}
       {walls}
       <Grid
@@ -270,10 +307,69 @@ function CameraSetup({ plan }: { plan: Plan }) {
   return null;
 }
 
-export function Viewer3D({ plan }: { plan: Plan }) {
+const MINIMAP_SIZE = 200;
+
+function PlanMinimap({ plan, activeFloor }: { plan: Plan; activeFloor: number }) {
+  const floorVerts = Object.values(plan.vertices).filter((v) => (v.floor ?? 0) === activeFloor);
+  const floorWalls = Object.values(plan.walls).filter((w) => (w.floor ?? 0) === activeFloor);
+  const floorRooms = Object.values(plan.rooms).filter((r) => (r.floor ?? 0) === activeFloor);
+
+  if (floorVerts.length === 0 && floorWalls.length === 0) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const v of floorVerts) {
+    minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+    minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+  }
+  const span = Math.max(maxX - minX, maxY - minY, 1);
+  const pad = 10;
+  const scale = (MINIMAP_SIZE - pad * 2) / span;
+  const offX = pad - minX * scale + ((MINIMAP_SIZE - pad * 2) - (maxX - minX) * scale) / 2;
+  const offY = pad - minY * scale + ((MINIMAP_SIZE - pad * 2) - (maxY - minY) * scale) / 2;
+
+  const tx = (x: number) => x * scale + offX;
+  const ty = (y: number) => y * scale + offY;
+
+  return (
+    <div className="absolute right-3 top-12 bg-white/95 rounded-lg border shadow-md overflow-hidden" style={{ width: MINIMAP_SIZE }}>
+      <div className="px-2 py-1 text-[10px] font-medium text-muted-foreground border-b bg-muted/30">
+        Floor {activeFloor + 1} — plan
+      </div>
+      <svg width={MINIMAP_SIZE} height={MINIMAP_SIZE}>
+        {floorRooms.map((room) => {
+          const pts = room.vertexIds.map((id) => plan.vertices[id]).filter(Boolean);
+          if (pts.length < 3) return null;
+          const d = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${tx(p.x).toFixed(1)} ${ty(p.y).toFixed(1)}`).join(" ") + " Z";
+          return <path key={room.id} d={d} fill={room.color ?? "#dbeafe"} fillOpacity={0.45} />;
+        })}
+        {floorWalls.map((wall) => {
+          const sv = plan.vertices[wall.startId];
+          const ev = plan.vertices[wall.endId];
+          if (!sv || !ev) return null;
+          const strokeW = Math.max(2, wall.thickness * 50 * scale);
+          return (
+            <line
+              key={wall.id}
+              x1={tx(sv.x)} y1={ty(sv.y)}
+              x2={tx(ev.x)} y2={ty(ev.y)}
+              stroke="#374151"
+              strokeWidth={strokeW}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+export function Viewer3D({ plan, activeFloor, viewFloor }: { plan: Plan; activeFloor: number; viewFloor: number | null }) {
   const hasWalls = Object.keys(plan.walls).length > 0;
+  const totalFloors = plan.metadata.floors ?? 1;
   const bounds = getPlanBounds(plan);
   const target: [number, number, number] = [bounds.centerX, 0, bounds.centerY];
+  // Minimap shows the selected floor, or activeFloor when viewing all
+  const minimapFloor = viewFloor ?? activeFloor;
 
   return (
     <div className="w-full h-full relative">
@@ -283,7 +379,7 @@ export function Viewer3D({ plan }: { plan: Plan }) {
         gl={{ antialias: true }}
       >
         <CameraSetup plan={plan} />
-        <Scene plan={plan} />
+        <Scene plan={plan} viewFloor={viewFloor} />
         <OrbitControls
           target={target}
           maxPolarAngle={Math.PI / 2 - 0.05}
@@ -299,6 +395,16 @@ export function Viewer3D({ plan }: { plan: Plan }) {
           </div>
         </div>
       )}
+
+      {totalFloors > 1 && (
+        <div className="absolute top-3 left-3 flex items-center gap-1 pointer-events-none">
+          <span className="text-[10px] text-white/70 bg-black/30 px-1.5 py-0.5 rounded mr-0.5">
+            {viewFloor === null ? "All floors" : `Floor ${viewFloor + 1}`}
+          </span>
+        </div>
+      )}
+
+      <PlanMinimap plan={plan} activeFloor={minimapFloor} />
 
       <div className="absolute bottom-3 right-3 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
         Orbit · Scroll zoom · Right-drag pan

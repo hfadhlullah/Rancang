@@ -28,6 +28,7 @@ import {
   Camera,
   LayoutDashboard,
   Sparkles,
+  Settings,
 } from "lucide-react";
 
 const Canvas2D = dynamic(
@@ -85,6 +86,8 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [saving, setSaving] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  const [activeFloor, setActiveFloor] = useState(0);
+  const [view3DFloor, setView3DFloor] = useState<number | null>(null); // null = all floors
 
   const saveTimer = useRef<NodeJS.Timeout | null>(null);
 
@@ -245,6 +248,57 @@ export function EditorShell({ projectId }: { projectId: string }) {
           </button>
         </div>
 
+        {/* Floor selector — 2D: picks active drawing floor; 3D: filters view */}
+        {(plan.metadata.floors ?? 1) > 1 || viewMode === "canvas" ? (
+          <div className="flex items-center gap-1">
+            {viewMode === "3d" && (
+              <button
+                onClick={() => setView3DFloor(null)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  view3DFloor === null
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted text-muted-foreground"
+                }`}
+              >
+                All
+              </button>
+            )}
+            {Array.from({ length: plan.metadata.floors ?? 1 }, (_, i) => (
+              <button
+                key={i}
+                onClick={() => {
+                  if (viewMode === "canvas") setActiveFloor(i);
+                  else setView3DFloor(i);
+                }}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  viewMode === "canvas"
+                    ? activeFloor === i
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-muted text-muted-foreground"
+                    : view3DFloor === i
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted text-muted-foreground"
+                }`}
+              >
+                F{i + 1}
+              </button>
+            ))}
+            {viewMode === "canvas" && (plan.metadata.floors ?? 1) < 6 && (
+              <button
+                onClick={() => {
+                  const floors = (plan.metadata.floors ?? 1) + 1;
+                  setPlan({ ...plan, metadata: { ...plan.metadata, floors } });
+                  setActiveFloor(floors - 1);
+                }}
+                className="px-2 py-1 text-xs rounded hover:bg-muted text-muted-foreground transition-colors"
+                title="Add floor"
+              >
+                +
+              </button>
+            )}
+          </div>
+        ) : null}
+
         {/* Undo/redo */}
         {viewMode === "canvas" && (
           <div className="flex items-center gap-0.5">
@@ -270,6 +324,14 @@ export function EditorShell({ projectId }: { projectId: string }) {
         <span className="text-xs text-muted-foreground w-12 text-right">
           {saving ? "Saving…" : "Saved"}
         </span>
+
+        <button
+          onClick={() => router.push("/settings")}
+          title="Settings"
+          className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
+        >
+          <Settings size={14} />
+        </button>
 
         {/* Right panel toggles */}
         <div className="flex items-center gap-0.5">
@@ -320,10 +382,11 @@ export function EditorShell({ projectId }: { projectId: string }) {
                 onPlanChange={setPlan}
                 tool={tool}
                 onToolChange={setTool}
+                activeFloor={activeFloor}
               />
             )
           ) : (
-            <Viewer3D plan={plan} />
+            <Viewer3D plan={plan} activeFloor={activeFloor} viewFloor={view3DFloor} />
           )}
         </main>
 

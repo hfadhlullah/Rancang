@@ -5,7 +5,7 @@ import { api } from "../../../convex/_generated/api";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { Plus, LogOut, FolderOpen } from "lucide-react";
+import { Plus, LogOut, FolderOpen, Settings } from "lucide-react";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 
 export function ProjectsDashboard() {
@@ -19,13 +19,22 @@ export function ProjectsDashboard() {
       <header className="border-b">
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
           <span className="font-bold text-lg">Rancang</span>
-          <button
-            onClick={() => signOut()}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <LogOut size={14} />
-            Sign out
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.push("/settings")}
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Settings size={14} />
+              Settings
+            </button>
+            <button
+              onClick={() => signOut()}
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <LogOut size={14} />
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 

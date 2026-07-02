@@ -2,10 +2,19 @@ import { v } from "convex/values";
 import { action, query, internalMutation } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal } from "./_generated/api";
-import { llm } from "./lib/llm/index";
+import { buildLLMFromSettings } from "./lib/llm/index";
 import { PlanSchema } from "./lib/planSchema";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+
+function extractJson(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) return fenced[1].trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 1);
+  return text;
+}
 
 const CRITIQUE_SYSTEM_PROMPT = `You are an expert residential architect reviewing a floor plan.
 Your task: provide specific, actionable critique anchored to the plan geometry.
@@ -97,22 +106,33 @@ export const run = action({
     const planParsed = PlanSchema.safeParse(JSON.parse(planJson));
     if (!planParsed.success) throw new Error("Invalid plan JSON");
 
+    const settings = await ctx.runQuery(internal.settings.getSettingsInternal, { userId });
+    const llm = buildLLMFromSettings(settings);
+
     const messages = [
       { role: "system" as const, content: CRITIQUE_SYSTEM_PROMPT },
       { role: "user" as const, content: buildUserMessage(planJson, requirementsBrief) },
     ];
 
+    function tryParse(text: string) {
+      try {
+        return CritiqueResultSchema.safeParse(JSON.parse(extractJson(text)));
+      } catch {
+        return { success: false as const, error: null };
+      }
+    }
+
     let raw = await llm.complete(messages, { responseFormat: "json", temperature: 0.3 });
-    let parsed = CritiqueResultSchema.safeParse(JSON.parse(raw));
+    let parsed = tryParse(raw);
 
     if (!parsed.success) {
       const retryMessages = [
         ...messages,
         { role: "assistant" as const, content: raw },
-        { role: "user" as const, content: "Your response did not match the required JSON schema. Return ONLY valid JSON, no markdown." },
+        { role: "user" as const, content: "Your response was not valid JSON. Return ONLY a valid JSON object, no markdown, no YAML." },
       ];
       raw = await llm.complete(retryMessages, { responseFormat: "json", temperature: 0.1 });
-      parsed = CritiqueResultSchema.safeParse(JSON.parse(raw));
+      parsed = tryParse(raw);
       if (!parsed.success) throw new Error("Critique parse failed after retry");
     }
 
