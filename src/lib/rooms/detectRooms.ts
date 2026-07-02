@@ -11,8 +11,52 @@ const AUTO_COLORS = [
  * its own endpoint (T-junction repair). Also snaps the vertex onto the wall line
  * to eliminate floating-point gaps. Runs to fixpoint.
  */
+/** Merge wall endpoints that are within SNAP_PX of each other into a single vertex. */
+function mergeCloseVertices(plan: Plan): Plan {
+  const SNAP_PX = 15;
+  let result = plan;
+  let dirty = true;
+
+  while (dirty) {
+    dirty = false;
+    const verts = Object.values(result.vertices);
+    for (let i = 0; i < verts.length; i++) {
+      for (let j = i + 1; j < verts.length; j++) {
+        const a = verts[i], b = verts[j];
+        if ((a.floor ?? 0) !== (b.floor ?? 0)) continue;
+        if (Math.hypot(a.x - b.x, a.y - b.y) > SNAP_PX) continue;
+
+        // Keep a, redirect all wall references from b to a
+        const newWalls = { ...result.walls };
+        for (const [wid, wall] of Object.entries(newWalls)) {
+          if (wall.startId === b.id && wall.endId === a.id) { delete newWalls[wid]; continue; }
+          if (wall.endId === b.id && wall.startId === a.id) { delete newWalls[wid]; continue; }
+          if (wall.startId === b.id || wall.endId === b.id) {
+            newWalls[wid] = {
+              ...wall,
+              startId: wall.startId === b.id ? a.id : wall.startId,
+              endId: wall.endId === b.id ? a.id : wall.endId,
+            };
+          }
+        }
+        const newVertices = { ...result.vertices };
+        delete newVertices[b.id];
+        const newOpenings = { ...result.openings };
+        for (const [oid, o] of Object.entries(newOpenings)) {
+          if (o.wallId && !newWalls[o.wallId]) delete newOpenings[oid];
+        }
+        result = { ...result, vertices: newVertices, walls: newWalls, openings: newOpenings };
+        dirty = true;
+        break;
+      }
+      if (dirty) break;
+    }
+  }
+  return result;
+}
+
 function repairTJunctions(plan: Plan): Plan {
-  const TOLERANCE = 4; // px — tight but handles float drift
+  const TOLERANCE = 15; // px — match VERTEX_SNAP_PX so off-grid walls are still caught
   let result = plan;
   let dirty = true;
 
@@ -181,8 +225,10 @@ function computeAreaM2(
  * Preserves existing room properties (name, type, color) when vertex set matches.
  */
 export function reconcileAutoRooms(plan: Plan): Plan {
-  // Repair T-junctions first so all enclosed polygons can be detected
-  const repaired = repairTJunctions(plan);
+  // 1. Merge near-duplicate vertices (broken elbows)
+  // 2. Repair T-junctions (snap endpoints onto wall bodies + split)
+  const merged = mergeCloseVertices(plan);
+  const repaired = repairTJunctions(merged);
   const ppm = repaired.metadata.pixelsPerMeter ?? 50;
 
   const floors = new Set<number>();
