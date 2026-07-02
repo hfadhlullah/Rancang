@@ -7,6 +7,7 @@ import { Grid, Html } from "@react-three/drei";
 import * as THREE from "three";
 import { nanoid } from "nanoid";
 import { Plan, Furniture, FurnitureKind, Opening } from "@/lib/types/plan";
+import { reconcileAutoRooms } from "@/lib/rooms/detectRooms";
 import { FURNITURE_CATALOG, FURNITURE_BY_KIND, FURNITURE_CATEGORIES } from "@/lib/furniture/catalog";
 import { Furniture3D } from "./Furniture3D";
 import { WallMesh, getPlanBounds, planToMeters } from "./Viewer3D";
@@ -25,6 +26,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Tag,
 } from "lucide-react";
 
 const PPM = 50; // pixels per meter (matches plan metadata default)
@@ -137,11 +139,68 @@ function snapPoint(
     if (d <= VERTEX_SNAP_PX && (!best || d < best.d)) best = { id: v.id, d, x: v.x, y: v.y };
   }
   if (best) return { x: best.x, y: best.y, vid: best.id };
+
+  // Wall-body snap: snap to closest point along any wall segment
+  let wallBest: { x: number; y: number; d: number } | null = null;
+  for (const wall of Object.values(plan.walls)) {
+    if ((wall.floor ?? 0) !== floor) continue;
+    const sv = plan.vertices[wall.startId];
+    const ev = plan.vertices[wall.endId];
+    if (!sv || !ev) continue;
+    const dx = ev.x - sv.x, dy = ev.y - sv.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1) continue;
+    const t = Math.max(0.05, Math.min(0.95, ((rawX - sv.x) * dx + (rawY - sv.y) * dy) / lenSq));
+    const cx = sv.x + t * dx, cy = sv.y + t * dy;
+    const d = Math.hypot(rawX - cx, rawY - cy);
+    if (d <= VERTEX_SNAP_PX && (!wallBest || d < wallBest.d)) wallBest = { x: cx, y: cy, d };
+  }
+  if (wallBest) return { x: wallBest.x, y: wallBest.y, vid: null };
+
   return {
     x: Math.round(rawX / GRID_PX) * GRID_PX,
     y: Math.round(rawY / GRID_PX) * GRID_PX,
     vid: null,
   };
+}
+
+/** If vertex (x,y) lies on the body of an existing wall, split that wall into two. */
+function splitWallAtPoint(plan: Plan, vertexId: string, x: number, y: number, floor: number): Plan {
+  for (const [wallId, wall] of Object.entries(plan.walls)) {
+    if ((wall.floor ?? 0) !== floor) continue;
+    if (wall.startId === vertexId || wall.endId === vertexId) continue;
+    const sv = plan.vertices[wall.startId];
+    const ev = plan.vertices[wall.endId];
+    if (!sv || !ev) continue;
+    const dx = ev.x - sv.x, dy = ev.y - sv.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1) continue;
+    const t = ((x - sv.x) * dx + (y - sv.y) * dy) / lenSq;
+    if (t <= 0.02 || t >= 0.98) continue; // too close to endpoints
+    const cx = sv.x + t * dx, cy = sv.y + t * dy;
+    if (Math.hypot(x - cx, y - cy) > VERTEX_SNAP_PX) continue; // not on this wall
+
+    // Split: original wall → [start→vertex] + [vertex→end]
+    const walls = { ...plan.walls };
+    delete walls[wallId];
+    const w1 = nanoid(), w2 = nanoid();
+    walls[w1] = { ...wall, id: w1, endId: vertexId };
+    walls[w2] = { ...wall, id: w2, startId: vertexId };
+
+    // Reassign openings proportionally
+    const openings = { ...plan.openings };
+    for (const [oid, o] of Object.entries(openings)) {
+      if (o.wallId !== wallId) continue;
+      if (o.position < t) {
+        openings[oid] = { ...o, wallId: w1, position: o.position / t };
+      } else {
+        openings[oid] = { ...o, wallId: w2, position: (o.position - t) / (1 - t) };
+      }
+    }
+
+    return { ...plan, walls, openings };
+  }
+  return plan;
 }
 
 function deleteWallFromPlan(plan: Plan, wallId: string): Plan {
@@ -291,7 +350,7 @@ interface Editor3DProps {
   activeFloor: number;
 }
 
-type Selected = { type: "wall" | "furniture" | "opening"; id: string } | null;
+type Selected = { type: "wall" | "furniture" | "opening" | "room"; id: string } | null;
 
 export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
   const wallHeight = plan.metadata.wallHeight;
@@ -300,6 +359,7 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
   const [tool, setTool] = useState<EditTool>("select");
   const [furnKind, setFurnKind] = useState<FurnitureKind>("sofa");
   const [paintColor, setPaintColor] = useState<string>(PAINT_COLORS[9]);
+  const [showRoomLabels, setShowRoomLabels] = useState(true);
   const [selected, setSelected] = useState<Selected>(null);
   const [ghostRot, setGhostRot] = useState(0);
   const [wallStart, setWallStart] = useState<{ x: number; y: number; vid: string | null } | null>(null);
@@ -310,10 +370,13 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
   const [furnDrag, setFurnDrag] = useState<{ id: string; x: number; y: number; grabDx: number; grabDy: number } | null>(null);
   const [wallDrag, setWallDrag] = useState<{ id: string; fromX: number; fromY: number; dx: number; dy: number } | null>(null);
   const [openingDrag, setOpeningDrag] = useState<{ id: string; wallId: string; liveT: number } | null>(null);
+  const [vertexDrag, setVertexDrag] = useState<{ id: string; fromX: number; fromY: number; dx: number; dy: number } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const keys = useRef<Set<string>>(new Set());
   const pointer = useRef<PointerState>({ x: 0, y: 0, inside: false, w: 0, h: 0 });
+  const pendingWallDrag = useRef<{ id: string; fromX: number; fromY: number } | null>(null);
+  const pendingVertexDrag = useRef<{ id: string; fromX: number; fromY: number } | null>(null);
   const edgePanEnabled = useRef(true);
   const rig = useRef<RigState>({ target: { x: 0, z: 0 }, yaw: Math.PI / 4, pitch: 0.9, dist: 18 });
   const rigInit = useRef(false);
@@ -389,6 +452,28 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
     setHoverId(null);
   }, [tool]);
 
+  // Auto-detect rooms from closed wall loops (Sims-style) + repair T-junctions
+  // Deps: only walls + vertices so this doesn't re-run when only rooms update
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  useEffect(() => {
+    const p = planRef.current;
+    const updated = reconcileAutoRooms(p);
+
+    // Check if anything actually changed (walls repair or room changes)
+    const wallsSame = JSON.stringify(Object.keys(updated.walls).sort()) === JSON.stringify(Object.keys(p.walls).sort());
+    const roomsSame =
+      JSON.stringify(Object.keys(updated.rooms).sort()) === JSON.stringify(Object.keys(p.rooms).sort()) &&
+      Object.keys(updated.rooms).every((id) => {
+        const a = p.rooms[id], b = updated.rooms[id];
+        return a && JSON.stringify(a.vertexIds) === JSON.stringify(b.vertexIds);
+      });
+
+    if (wallsSame && roomsSame) return;
+    onPlanChange(updated);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan.walls, plan.vertices]);
+
   const deleteSelected = useCallback(() => {
     if (!selected) return;
     if (selected.type === "wall") {
@@ -401,6 +486,10 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
       const openings = { ...plan.openings };
       delete openings[selected.id];
       onPlanChange({ ...plan, openings });
+    } else if (selected.type === "room") {
+      const rooms = { ...plan.rooms };
+      delete rooms[selected.id];
+      onPlanChange({ ...plan, rooms });
     }
     setSelected(null);
   }, [selected, plan, onPlanChange]);
@@ -448,6 +537,32 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
 
   function onGroundMove(e: ThreeEvent<PointerEvent>) {
     const raw = groundPointFromEvent(e);
+    if (pendingWallDrag.current) {
+      const dx = raw.x - pendingWallDrag.current.fromX;
+      const dy = raw.y - pendingWallDrag.current.fromY;
+      if (Math.hypot(dx, dy) > 8) {
+        const pd = pendingWallDrag.current;
+        pendingWallDrag.current = null;
+        setWallDrag({ id: pd.id, fromX: pd.fromX, fromY: pd.fromY, dx: 0, dy: 0 });
+      }
+      return;
+    }
+    if (pendingVertexDrag.current) {
+      const dx = raw.x - pendingVertexDrag.current.fromX;
+      const dy = raw.y - pendingVertexDrag.current.fromY;
+      if (Math.hypot(dx, dy) > 8) {
+        const pd = pendingVertexDrag.current;
+        pendingVertexDrag.current = null;
+        setVertexDrag({ id: pd.id, fromX: pd.fromX, fromY: pd.fromY, dx: 0, dy: 0 });
+      }
+      return;
+    }
+    if (vertexDrag) {
+      const dx = Math.round((raw.x - vertexDrag.fromX) / GRID_PX) * GRID_PX;
+      const dy = Math.round((raw.y - vertexDrag.fromY) / GRID_PX) * GRID_PX;
+      setVertexDrag((d) => (d ? { ...d, dx, dy } : null));
+      return;
+    }
     if (furnDrag) {
       const gx = Math.round((raw.x - furnDrag.grabDx) / (GRID_PX / 2)) * (GRID_PX / 2);
       const gy = Math.round((raw.y - furnDrag.grabDy) / (GRID_PX / 2)) * (GRID_PX / 2);
@@ -538,11 +653,15 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
     const bid = b.vid ?? nanoid();
     if (!b.vid) vertices[bid] = { id: bid, x: b.x, y: b.y, floor: activeFloor };
     const wid = nanoid();
-    onPlanChange({
+    let updated: Plan = {
       ...plan,
       vertices,
       walls: { ...plan.walls, [wid]: { id: wid, startId: aid, endId: bid, thickness: 0.2, floor: activeFloor } },
-    });
+    };
+    // Split any existing wall that a new endpoint lands on
+    if (!a.vid) updated = splitWallAtPoint(updated, aid, a.x, a.y, activeFloor);
+    if (!b.vid) updated = splitWallAtPoint(updated, bid, b.x, b.y, activeFloor);
+    onPlanChange(updated);
   }
 
   // ---------- Wall interactions ----------
@@ -624,7 +743,7 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
       e.stopPropagation();
       setSelected({ type: "wall", id: wallId });
       const p = groundPointFromEvent(e);
-      setWallDrag({ id: wallId, fromX: p.x, fromY: p.y, dx: 0, dy: 0 });
+      pendingWallDrag.current = { id: wallId, fromX: p.x, fromY: p.y };
     }
   }
 
@@ -673,6 +792,8 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
   // Commit drags on global pointer-up
   useEffect(() => {
     function onUp() {
+      pendingWallDrag.current = null;
+      pendingVertexDrag.current = null;
       if (furnDrag) {
         const f = plan.furniture?.[furnDrag.id];
         if (f && (f.x !== furnDrag.x || f.y !== furnDrag.y)) {
@@ -701,10 +822,19 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
         }
         setOpeningDrag(null);
       }
+      if (vertexDrag) {
+        if (vertexDrag.dx !== 0 || vertexDrag.dy !== 0) {
+          const v = plan.vertices[vertexDrag.id];
+          if (v) {
+            onPlanChange({ ...plan, vertices: { ...plan.vertices, [v.id]: { ...v, x: v.x + vertexDrag.dx, y: v.y + vertexDrag.dy } } });
+          }
+        }
+        setVertexDrag(null);
+      }
     }
     window.addEventListener("pointerup", onUp);
     return () => window.removeEventListener("pointerup", onUp);
-  }, [furnDrag, wallDrag, openingDrag, plan, onPlanChange]);
+  }, [furnDrag, wallDrag, openingDrag, vertexDrag, plan, onPlanChange]);
 
   // ---------- Render data ----------
 
@@ -855,9 +985,20 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
                 geometry={geometry}
                 renderOrder={1}
                 onPointerDown={(e) => {
-                  if (e.button !== 0 || tool !== "paint" || (room.floor ?? 0) !== activeFloor) return;
-                  e.stopPropagation();
-                  onPlanChange({ ...plan, rooms: { ...plan.rooms, [room.id]: { ...room, color: paintColor } } });
+                  if (e.button !== 0 || (room.floor ?? 0) !== activeFloor) return;
+                  if (tool === "paint") {
+                    e.stopPropagation();
+                    onPlanChange({ ...plan, rooms: { ...plan.rooms, [room.id]: { ...room, color: paintColor } } });
+                  } else if (tool === "select") {
+                    e.stopPropagation();
+                    setSelected({ type: "room", id: room.id });
+                  } else if (tool === "delete") {
+                    e.stopPropagation();
+                    const rooms = { ...plan.rooms };
+                    delete rooms[room.id];
+                    onPlanChange({ ...plan, rooms });
+                  }
+                  // wall/door/window/furniture: let event bubble to ground plane
                 }}
               >
                 <meshStandardMaterial
@@ -871,18 +1012,46 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
                   side={THREE.DoubleSide}
                 />
               </mesh>
-              <Html position={[centX, yOffset + 0.08, centZ]} center zIndexRange={[10, 0]}>
-                <div className="pointer-events-none select-none text-center" style={{ whiteSpace: "nowrap" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", background: "rgba(255,255,255,0.82)", padding: "1px 7px", borderRadius: 5 }}>
-                    {room.name}
-                  </div>
-                  {room.area != null && (
-                    <div style={{ fontSize: 9, color: "#64748b", background: "rgba(255,255,255,0.7)", padding: "0 5px", borderRadius: 3, marginTop: 1 }}>
-                      {room.area.toFixed(1)} m²
+              {showRoomLabels && (
+                <Html position={[centX, yOffset + 0.08, centZ]} center zIndexRange={[10, 0]}>
+                  <div className="pointer-events-none select-none text-center" style={{ whiteSpace: "nowrap" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", background: "rgba(255,255,255,0.82)", padding: "1px 7px", borderRadius: 5 }}>
+                      {room.name}
                     </div>
-                  )}
-                </div>
-              </Html>
+                    {room.area != null && (
+                      <div style={{ fontSize: 9, color: "#64748b", background: "rgba(255,255,255,0.7)", padding: "0 5px", borderRadius: 3, marginTop: 1 }}>
+                        {room.area.toFixed(1)} m²
+                      </div>
+                    )}
+                  </div>
+                </Html>
+              )}
+              {selected?.type === "room" && selected.id === room.id && tool === "select" && verts.map((v) => {
+                const drag = vertexDrag?.id === v.id ? vertexDrag : null;
+                const vx = planToMeters(v.x + (drag?.dx ?? 0));
+                const vz = planToMeters(v.y + (drag?.dy ?? 0));
+                const color = drag ? "#f59e0b" : "#3b82f6";
+                const onDown = (e: ThreeEvent<PointerEvent>) => {
+                  if (e.button !== 0) return;
+                  e.stopPropagation();
+                  const raw = groundPointFromEvent(e);
+                  pendingVertexDrag.current = { id: v.id, fromX: raw.x, fromY: raw.y };
+                };
+                return (
+                  <group key={v.id}>
+                    {/* floor handle */}
+                    <mesh position={[vx, yOffset + 0.04, vz]} onPointerDown={onDown} renderOrder={10}>
+                      <boxGeometry args={[0.22, 0.1, 0.22]} />
+                      <meshStandardMaterial color={color} depthTest={false} />
+                    </mesh>
+                    {/* top handle — stick above wall, depthTest off so pillar doesn't occlude it */}
+                    <mesh position={[vx, yOffset + wallHeight + 0.3, vz]} onPointerDown={onDown} renderOrder={10}>
+                      <boxGeometry args={[0.22, 0.6, 0.22]} />
+                      <meshStandardMaterial color={color} depthTest={false} />
+                    </mesh>
+                  </group>
+                );
+              })}
             </group>
           );
         })}
@@ -1147,8 +1316,19 @@ export function Editor3D({ plan, onPlanChange, activeFloor }: Editor3DProps) {
         WASD/edges pan · Q/E or middle-drag rotate · Scroll zoom · Right-drag pan
       </div>
 
-      <div className="absolute top-3 right-3 text-[11px] bg-amber-500/90 text-white px-2.5 py-1 rounded-full shadow">
-        Build Mode — Floor {activeFloor + 1}
+      <div className="absolute top-3 right-3 flex items-center gap-2">
+        <button
+          onClick={() => setShowRoomLabels((v) => !v)}
+          title="Toggle room labels"
+          className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full shadow transition-colors ${
+            showRoomLabels ? "bg-primary text-primary-foreground" : "bg-background/90 text-muted-foreground border"
+          }`}
+        >
+          <Tag size={11} /> Labels
+        </button>
+        <div className="text-[11px] bg-amber-500/90 text-white px-2.5 py-1 rounded-full shadow">
+          Build Mode — Floor {activeFloor + 1}
+        </div>
       </div>
     </div>
   );
