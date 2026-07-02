@@ -12,6 +12,7 @@ import { CritiquePanel } from "@/components/critique/CritiquePanel";
 import { RequirementsForm } from "@/components/requirements/RequirementsForm";
 import { SnapshotPanel } from "@/components/editor/SnapshotPanel";
 import { RoomEditor } from "@/components/editor/RoomEditor";
+import { GeneratePanel } from "@/components/generate/GeneratePanel";
 import {
   ArrowLeft,
   Box,
@@ -26,6 +27,7 @@ import {
   FileText,
   Camera,
   LayoutDashboard,
+  Sparkles,
 } from "lucide-react";
 
 const Canvas2D = dynamic(
@@ -71,7 +73,7 @@ function historyReducer(state: HistoryState, action: HistoryAction): HistoryStat
   }
 }
 
-type RightPanel = "critique" | "requirements" | "snapshots" | "rooms" | null;
+type RightPanel = "critique" | "requirements" | "snapshots" | "rooms" | "generate" | null;
 
 export function EditorShell({ projectId }: { projectId: string }) {
   const router = useRouter();
@@ -186,6 +188,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
     icon: React.ReactNode;
     title: string;
   }[] = [
+    { id: "generate", icon: <Sparkles size={14} />, title: "Generate from prompt" },
     { id: "rooms", icon: <LayoutDashboard size={14} />, title: "Rooms" },
     { id: "requirements", icon: <FileText size={14} />, title: "Requirements" },
     { id: "critique", icon: <MessageSquare size={14} />, title: "AI Critique" },
@@ -345,6 +348,9 @@ export function EditorShell({ projectId }: { projectId: string }) {
             )}
             {rightPanel === "rooms" && (
               <RoomEditor plan={plan} onPlanChange={setPlan} />
+            )}
+            {rightPanel === "generate" && (
+              <GeneratePanel plan={plan} onPlanChange={setPlan} />
             )}
           </aside>
         )}

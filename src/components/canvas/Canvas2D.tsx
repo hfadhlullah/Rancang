@@ -402,7 +402,11 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
           strokeWidth={isSelected ? 2 : 1}
           onClick={(e) => {
             e.cancelBubble = true;
-            setSelected({ type: "wall", id: wall.id });
+            if (tool === "door" || tool === "window") {
+              handleOpeningClick(stageToCanvas(e), tool);
+            } else {
+              setSelected({ type: "wall", id: wall.id });
+            }
           }}
           onMouseEnter={(e) => {
             e.target.getStage()!.container().style.cursor =
