@@ -31,6 +31,7 @@ import {
   LayoutDashboard,
   Sparkles,
   Settings,
+  Hammer,
 } from "lucide-react";
 
 const Canvas2D = dynamic(
@@ -39,6 +40,10 @@ const Canvas2D = dynamic(
 );
 const Viewer3D = dynamic(
   () => import("@/components/viewer/Viewer3D").then((m) => ({ default: m.Viewer3D })),
+  { ssr: false }
+);
+const Editor3D = dynamic(
+  () => import("@/components/viewer/Editor3D").then((m) => ({ default: m.Editor3D })),
   { ssr: false }
 );
 
@@ -84,6 +89,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const updateProject = useMutation(api.projects.update);
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
+  const [menu3DOpen, setMenu3DOpen] = useState(false);
   const [tool, setTool] = useState<DrawingTool>("select");
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [saving, setSaving] = useState(false);
@@ -165,6 +171,8 @@ export function EditorShell({ projectId }: { projectId: string }) {
         e.preventDefault();
         dispatch({ type: "REDO" });
       }
+      // 2D tool hotkeys only apply on the canvas — they collide with 3D camera keys (WASD)
+      if (viewMode !== "canvas") return;
       if (e.key === "Escape") setTool("select");
       if (e.key === "a") setTool("area");
       if (e.key === "w") setTool("wall");
@@ -175,7 +183,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [viewMode]);
 
   const tools: {
     id: DrawingTool;
@@ -229,11 +237,14 @@ export function EditorShell({ projectId }: { projectId: string }) {
         <span className="font-medium text-sm truncate max-w-[200px]">{project.name}</span>
         <div className="flex-1" />
 
-        {/* View toggle */}
-        <div className="flex items-center border rounded-md overflow-hidden text-sm">
+        {/* View toggle — 3D opens a View / Edit chooser */}
+        <div className="relative flex items-center border rounded-md text-sm">
           <button
-            onClick={() => setViewMode("canvas")}
-            className={`px-3 py-1.5 transition-colors ${
+            onClick={() => {
+              setViewMode("canvas");
+              setMenu3DOpen(false);
+            }}
+            className={`px-3 py-1.5 rounded-l-md transition-colors ${
               viewMode === "canvas"
                 ? "bg-primary text-primary-foreground"
                 : "hover:bg-muted"
@@ -242,20 +253,54 @@ export function EditorShell({ projectId }: { projectId: string }) {
             2D
           </button>
           <button
-            onClick={() => setViewMode("3d")}
-            className={`px-3 py-1.5 flex items-center gap-1.5 transition-colors ${
-              viewMode === "3d"
+            onClick={() => setMenu3DOpen((o) => !o)}
+            className={`px-3 py-1.5 rounded-r-md flex items-center gap-1.5 transition-colors ${
+              viewMode === "3d" || viewMode === "3d-edit"
                 ? "bg-primary text-primary-foreground"
                 : "hover:bg-muted"
             }`}
           >
             <Box size={12} />
-            3D
+            {viewMode === "3d-edit" ? "3D Edit" : "3D"}
           </button>
+          {menu3DOpen && (
+            <div className="absolute top-full right-0 mt-1 z-50 w-44 bg-background border rounded-lg shadow-lg overflow-hidden">
+              <button
+                onClick={() => {
+                  setViewMode("3d");
+                  setMenu3DOpen(false);
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-muted ${
+                  viewMode === "3d" ? "text-primary" : ""
+                }`}
+              >
+                <Box size={14} />
+                <span>
+                  View
+                  <span className="block text-[10px] text-muted-foreground">Orbit or walk around</span>
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  setViewMode("3d-edit");
+                  setMenu3DOpen(false);
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-muted ${
+                  viewMode === "3d-edit" ? "text-primary" : ""
+                }`}
+              >
+                <Hammer size={14} />
+                <span>
+                  Edit
+                  <span className="block text-[10px] text-muted-foreground">Build mode — walls, furniture, paint</span>
+                </span>
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Floor selector — 2D: picks active drawing floor; 3D: filters view */}
-        {(plan.metadata.floors ?? 1) > 1 || viewMode === "canvas" ? (
+        {/* Floor selector — 2D & 3D edit: picks active editing floor; 3D view: filters view */}
+        {(plan.metadata.floors ?? 1) > 1 || viewMode !== "3d" ? (
           <div className="flex items-center gap-1">
             {viewMode === "3d" && (
               <button
@@ -273,11 +318,11 @@ export function EditorShell({ projectId }: { projectId: string }) {
               <button
                 key={i}
                 onClick={() => {
-                  if (viewMode === "canvas") setActiveFloor(i);
-                  else setView3DFloor(i);
+                  if (viewMode === "3d") setView3DFloor(i);
+                  else setActiveFloor(i);
                 }}
                 className={`px-2 py-1 text-xs rounded transition-colors ${
-                  viewMode === "canvas"
+                  viewMode !== "3d"
                     ? activeFloor === i
                       ? "bg-primary text-primary-foreground"
                       : "hover:bg-muted text-muted-foreground"
@@ -305,8 +350,8 @@ export function EditorShell({ projectId }: { projectId: string }) {
           </div>
         ) : null}
 
-        {/* Undo/redo */}
-        {viewMode === "canvas" && (
+        {/* Undo/redo — available wherever edits happen (2D canvas and 3D build mode) */}
+        {viewMode !== "3d" && (
           <div className="flex items-center gap-0.5">
             <button
               onClick={() => dispatch({ type: "UNDO" })}
@@ -390,6 +435,10 @@ export function EditorShell({ projectId }: { projectId: string }) {
                 onToolChange={setTool}
                 activeFloor={activeFloor}
               />
+            )
+          ) : viewMode === "3d-edit" ? (
+            initialized && (
+              <Editor3D plan={plan} onPlanChange={setPlan} activeFloor={activeFloor} />
             )
           ) : (
             <Viewer3D plan={plan} activeFloor={activeFloor} viewFloor={view3DFloor} />

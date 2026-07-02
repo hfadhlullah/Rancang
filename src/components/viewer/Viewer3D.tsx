@@ -1,16 +1,18 @@
 /// <reference types="@react-three/fiber" />
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Grid } from "@react-three/drei";
+import { OrbitControls, Grid, PointerLockControls, Html } from "@react-three/drei";
 import * as THREE from "three";
 import { Plan, Opening } from "@/lib/types/plan";
+import { Furniture3D } from "./Furniture3D";
+import { Footprints, Orbit } from "lucide-react";
 
 const METERS_PER_PX = 1 / 50; // inverse of pixelsPerMeter default
 const WINDOW_SILL_HEIGHT = 0.9; // meters, default sill for window openings
 
-function planToMeters(px: number) {
+export function planToMeters(px: number) {
   return px * METERS_PER_PX;
 }
 
@@ -42,9 +44,12 @@ interface WallMeshProps {
   thickness: number;
   height: number;
   openings: Opening[];
+  color?: string;
+  selectedOpeningId?: string;
+  onOpeningPointerDown?: (openingId: string, e: import("@react-three/fiber").ThreeEvent<PointerEvent>) => void;
 }
 
-function WallMesh({ sx, sy, ex, ey, thickness, height, openings }: WallMeshProps) {
+export function WallMesh({ sx, sy, ex, ey, thickness, height, openings, color, selectedOpeningId, onOpeningPointerDown }: WallMeshProps) {
   const dx = ex - sx;
   const dy = ey - sy;
   const length = Math.sqrt(dx * dx + dy * dy);
@@ -90,7 +95,7 @@ function WallMesh({ sx, sy, ex, ey, thickness, height, openings }: WallMeshProps
               receiveShadow
             >
               <boxGeometry args={[segLen, segH, thickness]} />
-              <meshStandardMaterial color="#d1d5db" />
+              <meshStandardMaterial color={color ?? "#d1d5db"} />
             </mesh>
           );
         })}
@@ -98,19 +103,23 @@ function WallMesh({ sx, sy, ex, ey, thickness, height, openings }: WallMeshProps
         const center = o.position * length;
         const y0 = o.type === "window" ? WINDOW_SILL_HEIGHT : 0;
         const yCenter = y0 + o.height / 2;
+        const isSelOp = selectedOpeningId === o.id;
+        const selColor = "#f59e0b";
+        const handler = onOpeningPointerDown
+          ? { onPointerDown: (e: import("@react-three/fiber").ThreeEvent<PointerEvent>) => { e.stopPropagation(); onOpeningPointerDown(o.id, e); } }
+          : {};
         if (o.type === "window") {
           return (
-            <mesh key={o.id} position={worldPos(center, yCenter)} rotation={[0, -angle, 0]}>
+            <mesh key={o.id} position={worldPos(center, yCenter)} rotation={[0, -angle, 0]} {...handler}>
               <boxGeometry args={[o.width, o.height, Math.max(thickness * 0.3, 0.02)]} />
-              <meshStandardMaterial color="#93c5fd" opacity={0.4} transparent />
+              <meshStandardMaterial color={isSelOp ? selColor : "#93c5fd"} opacity={isSelOp ? 0.85 : 0.4} transparent />
             </mesh>
           );
         }
-        // Door: thin panel filling most of the opening, slightly ajar-looking flat leaf
         return (
-          <mesh key={o.id} position={worldPos(center, yCenter)} rotation={[0, -angle, 0]}>
+          <mesh key={o.id} position={worldPos(center, yCenter)} rotation={[0, -angle, 0]} {...handler}>
             <boxGeometry args={[o.width * 0.94, o.height * 0.98, Math.max(thickness * 0.25, 0.02)]} />
-            <meshStandardMaterial color="#92400e" />
+            <meshStandardMaterial color={isSelOp ? selColor : "#92400e"} />
           </mesh>
         );
       })}
@@ -120,7 +129,7 @@ function WallMesh({ sx, sy, ex, ey, thickness, height, openings }: WallMeshProps
 
 /** Bounding box (in meters) of the drawn plan — floor/camera must follow this,
  * not the fixed canvas metadata, since walls can be drawn anywhere on the grid. */
-function getPlanBounds(plan: Plan) {
+export function getPlanBounds(plan: Plan) {
   const verts = Object.values(plan.vertices);
   if (verts.length === 0) {
     const w = planToMeters(plan.metadata.width * plan.metadata.pixelsPerMeter);
@@ -214,13 +223,51 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
             thickness={thickness}
             height={wallHeight}
             openings={openings}
+            color={wall.color}
           />
         </group>
       );
     });
   }, [plan, wallHeight, viewFloor]);
 
-  // Room floor fills
+  // Corner pillar fills — box at each vertex where walls meet, closes L/T/X junction gaps
+  const cornerFills = useMemo(() => {
+    // Track max thickness per vertex per floor so we pick the right pillar size
+    const vertexInfo = new Map<string, { x: number; z: number; thickness: number; floor: number; color?: string }>();
+    for (const wall of Object.values(plan.walls)) {
+      if (viewFloor !== null && (wall.floor ?? 0) !== viewFloor) continue;
+      const floorIndex = wall.floor ?? 0;
+      for (const vid of [wall.startId, wall.endId]) {
+        const v = plan.vertices[vid];
+        if (!v) continue;
+        const key = `${vid}-${floorIndex}`;
+        const prev = vertexInfo.get(key);
+        if (!prev || wall.thickness > prev.thickness) {
+          vertexInfo.set(key, { x: planToMeters(v.x), z: planToMeters(v.y), thickness: wall.thickness, floor: floorIndex, color: wall.color });
+        }
+      }
+    }
+    return Array.from(vertexInfo.entries()).map(([key, { x, z, thickness, floor, color }]) => (
+      <mesh
+        key={`cp-${key}`}
+        position={[x, floor * wallHeight + wallHeight / 2, z]}
+        castShadow
+      >
+        <boxGeometry args={[thickness, wallHeight, thickness]} />
+        <meshStandardMaterial color={color ?? "#d1d5db"} />
+      </mesh>
+    ));
+  }, [plan, wallHeight, viewFloor]);
+
+  const furniture = useMemo(() => {
+    return Object.values(plan.furniture ?? {})
+      .filter((f) => viewFloor === null || (f.floor ?? 0) === viewFloor)
+      .map((f) => (
+        <Furniture3D key={f.id} item={f} yOffset={(f.floor ?? 0) * wallHeight} />
+      ));
+  }, [plan, wallHeight, viewFloor]);
+
+  // Room floor fills + labels
   const rooms = useMemo(() => {
     return Object.values(plan.rooms)
       .filter((room) => viewFloor === null || (room.floor ?? 0) === viewFloor)
@@ -236,19 +283,45 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
       const geometry = new THREE.ShapeGeometry(shape);
       const color = room.color ?? "#dbeafe";
       const floorIndex = room.floor ?? 0;
-      const yOffset = floorIndex * wallHeight + 0.01;
+      const yOffset = floorIndex * wallHeight + 0.008;
+      // Centroid for label
+      const centX = verts.reduce((s, v) => s + planToMeters(v.x), 0) / verts.length;
+      const centZ = verts.reduce((s, v) => s + planToMeters(v.y), 0) / verts.length;
       return (
-        <mesh
-          key={room.id}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, yOffset, 0]}
-          geometry={geometry}
-        >
-          <meshStandardMaterial color={color} opacity={0.4} transparent />
-        </mesh>
+        <group key={room.id}>
+          <mesh
+            rotation={[Math.PI / 2, 0, 0]}
+            position={[0, yOffset, 0]}
+            geometry={geometry}
+            renderOrder={1}
+          >
+            <meshStandardMaterial
+              color={color}
+              opacity={0.72}
+              transparent
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-2}
+              polygonOffsetUnits={-2}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <Html position={[centX, yOffset + 0.08, centZ]} center zIndexRange={[10, 0]}>
+            <div className="pointer-events-none select-none text-center" style={{ whiteSpace: "nowrap" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", background: "rgba(255,255,255,0.82)", padding: "1px 7px", borderRadius: 5, letterSpacing: "0.01em" }}>
+                {room.name}
+              </div>
+              {room.area != null && (
+                <div style={{ fontSize: 9, color: "#64748b", background: "rgba(255,255,255,0.7)", padding: "0 5px", borderRadius: 3, marginTop: 1 }}>
+                  {room.area.toFixed(1)} m²
+                </div>
+              )}
+            </div>
+          </Html>
+        </group>
       );
     });
-  }, [plan, viewFloor]);
+  }, [plan, wallHeight, viewFloor]);
 
   const hasContent = Object.keys(plan.walls).length > 0;
 
@@ -264,6 +337,8 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
       <FloorSlabs plan={plan} wallHeight={wallHeight} viewFloor={viewFloor} />
       {rooms}
       {walls}
+      {cornerFills}
+      {furniture}
       <Grid
         args={[50, 50]}
         position={[0, -0.001, 0]}
@@ -283,6 +358,61 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
       )}
     </>
   );
+}
+
+const EYE_HEIGHT = 1.6;
+
+/** First-person walk: pointer-lock look + WASD/arrows movement at eye height. */
+function WalkControls({ plan, floor, wallHeight }: { plan: Plan; floor: number; wallHeight: number }) {
+  const { camera } = useThree();
+  const keys = useRef<Set<string>>(new Set());
+  const placed = useRef(false);
+
+  useEffect(() => {
+    if (!placed.current) {
+      const bounds = getPlanBounds(plan);
+      camera.position.set(bounds.centerX, floor * wallHeight + EYE_HEIGHT, bounds.centerY);
+      placed.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const WALK_KEYS = new Set(["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright", "shift"]);
+    const down = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const k = e.key.toLowerCase();
+      keys.current.add(k);
+      // Prevent browser quick-find / scroll. WalkControls only mounts in walk mode,
+      // so it's safe to always block these — input fields are guarded above.
+      if (WALK_KEYS.has(k)) e.preventDefault();
+    };
+    const up = (e: KeyboardEvent) => keys.current.delete(e.key.toLowerCase());
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
+
+  useFrame((_, dt) => {
+    const k = keys.current;
+    const speed = (k.has("shift") ? 4.5 : 2.2) * Math.min(dt, 0.05);
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y = 0;
+    forward.normalize();
+    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
+    if (k.has("w") || k.has("arrowup")) camera.position.addScaledVector(forward, speed);
+    if (k.has("s") || k.has("arrowdown")) camera.position.addScaledVector(forward, -speed);
+    if (k.has("a") || k.has("arrowleft")) camera.position.addScaledVector(right, -speed);
+    if (k.has("d") || k.has("arrowright")) camera.position.addScaledVector(right, speed);
+    camera.position.y = floor * wallHeight + EYE_HEIGHT;
+  });
+
+  return <PointerLockControls />;
 }
 
 function CameraSetup({ plan }: { plan: Plan }) {
@@ -370,6 +500,7 @@ export function Viewer3D({ plan, activeFloor, viewFloor }: { plan: Plan; activeF
   const target: [number, number, number] = [bounds.centerX, 0, bounds.centerY];
   // Minimap shows the selected floor, or activeFloor when viewing all
   const minimapFloor = viewFloor ?? activeFloor;
+  const [walkMode, setWalkMode] = useState(false);
 
   return (
     <div className="w-full h-full relative">
@@ -378,15 +509,28 @@ export function Viewer3D({ plan, activeFloor, viewFloor }: { plan: Plan; activeF
         camera={{ fov: 50, near: 0.1, far: 200 }}
         gl={{ antialias: true }}
       >
-        <CameraSetup plan={plan} />
+        {!walkMode && <CameraSetup plan={plan} />}
         <Scene plan={plan} viewFloor={viewFloor} />
-        <OrbitControls
-          target={target}
-          maxPolarAngle={Math.PI / 2 - 0.05}
-          minDistance={1}
-          maxDistance={80}
-        />
+        {walkMode ? (
+          <WalkControls plan={plan} floor={minimapFloor} wallHeight={plan.metadata.wallHeight} />
+        ) : (
+          <OrbitControls
+            target={target}
+            maxPolarAngle={Math.PI / 2 - 0.05}
+            minDistance={1}
+            maxDistance={80}
+          />
+        )}
       </Canvas>
+
+      <button
+        onClick={() => setWalkMode((w) => !w)}
+        className="absolute top-3 right-3 flex items-center gap-1.5 text-xs bg-background/90 hover:bg-background border rounded-md px-2.5 py-1.5 shadow-sm transition-colors"
+        title={walkMode ? "Switch to orbit view" : "Walk around in first person"}
+      >
+        {walkMode ? <Orbit size={13} /> : <Footprints size={13} />}
+        {walkMode ? "Orbit" : "Walk"}
+      </button>
 
       {!hasWalls && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -407,7 +551,9 @@ export function Viewer3D({ plan, activeFloor, viewFloor }: { plan: Plan; activeF
       <PlanMinimap plan={plan} activeFloor={minimapFloor} />
 
       <div className="absolute bottom-3 right-3 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-        Orbit · Scroll zoom · Right-drag pan
+        {walkMode
+          ? "Click to look around · WASD move · Shift run · Esc release"
+          : "Orbit · Scroll zoom · Right-drag pan"}
       </div>
     </div>
   );

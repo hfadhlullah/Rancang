@@ -13,6 +13,7 @@ export const WallSchema = z.object({
   endId: z.string(),
   thickness: z.number().default(0.2),
   floor: z.number().optional(),
+  color: z.string().optional(),
 });
 
 export const OpeningSchema = z.object({
@@ -56,11 +57,22 @@ export const PlanMetadataSchema = z.object({
   floors: z.number().optional(),
 });
 
+export const FurnitureSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  x: z.number(),
+  y: z.number(),
+  rotation: z.number(),
+  color: z.string().optional(),
+  floor: z.number().optional(),
+});
+
 export const PlanSchema = z.object({
   vertices: z.record(VertexSchema),
   walls: z.record(WallSchema),
   openings: z.record(OpeningSchema),
   rooms: z.record(RoomSchema),
+  furniture: z.record(FurnitureSchema).optional(),
   metadata: PlanMetadataSchema,
 });
 

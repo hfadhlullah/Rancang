@@ -18,6 +18,7 @@ export interface Wall {
   endId: VertexId;
   thickness: number; // meters, default 0.2
   floor?: number; // 0-indexed, default 0
+  color?: string; // hex, painted wall color (3D edit mode)
 }
 
 export type OpeningType = "door" | "window";
@@ -59,6 +60,41 @@ export interface Room {
   floor?: number; // 0-indexed, default 0
 }
 
+export type FurnitureId = string;
+
+/** Parametric furniture kinds — geometry built in code, no external assets. */
+export type FurnitureKind =
+  | "bed-double"
+  | "bed-single"
+  | "sofa"
+  | "armchair"
+  | "coffee-table"
+  | "dining-table"
+  | "chair"
+  | "desk"
+  | "wardrobe"
+  | "toilet"
+  | "sink"
+  | "shower"
+  | "bathtub"
+  | "stove"
+  | "fridge"
+  | "counter"
+  | "tv-stand"
+  | "plant";
+
+export interface Furniture {
+  id: FurnitureId;
+  kind: FurnitureKind;
+  /** Center position in canvas pixels (same space as vertices) */
+  x: number;
+  y: number;
+  /** Rotation in radians around vertical axis */
+  rotation: number;
+  color?: string; // hex override
+  floor?: number; // 0-indexed, default 0
+}
+
 export interface PlanMetadata {
   /** Canvas width in meters */
   width: number;
@@ -79,6 +115,8 @@ export interface Plan {
   walls: Record<WallId, Wall>;
   openings: Record<OpeningId, Opening>;
   rooms: Record<RoomId, Room>;
+  /** Optional for backward compatibility with plans saved before furniture existed */
+  furniture?: Record<FurnitureId, Furniture>;
   metadata: PlanMetadata;
 }
 
@@ -87,6 +125,7 @@ export const DEFAULT_PLAN: Plan = {
   walls: {},
   openings: {},
   rooms: {},
+  furniture: {},
   metadata: {
     width: 20,
     height: 15,

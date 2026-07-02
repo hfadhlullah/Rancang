@@ -15,6 +15,7 @@ import {
   positionOnWall,
 } from "@/lib/canvas/geometry";
 import { findClosestWall, recalcRoomAreas, ROOM_COLORS } from "@/lib/canvas/planUtils";
+import { FURNITURE_BY_KIND } from "@/lib/furniture/catalog";
 import { nanoid } from "nanoid";
 
 const GRID_PX = 50;
@@ -547,6 +548,63 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
     });
   }
 
+  function renderFurniture() {
+    return Object.values(plan.furniture ?? {})
+      .filter((f) => (f.floor ?? 0) === activeFloor)
+      .map((f) => {
+        const def = FURNITURE_BY_KIND[f.kind];
+        if (!def) return null;
+        const w = def.w * GRID_PX;
+        const d = def.d * GRID_PX;
+        return (
+          <Group
+            key={f.id}
+            x={f.x}
+            y={f.y}
+            rotation={(f.rotation * 180) / Math.PI}
+            draggable={tool === "select"}
+            onMouseEnter={(e) => {
+              if (tool === "select") e.target.getStage()!.container().style.cursor = "move";
+            }}
+            onMouseLeave={(e) => {
+              e.target.getStage()!.container().style.cursor = "default";
+            }}
+            onDragEnd={(e) => {
+              const g = e.target;
+              const nx = g.x();
+              const ny = g.y();
+              onPlanChange({
+                ...plan,
+                furniture: { ...(plan.furniture ?? {}), [f.id]: { ...f, x: nx, y: ny } },
+              });
+            }}
+          >
+            <Rect
+              x={-w / 2}
+              y={-d / 2}
+              width={w}
+              height={d}
+              fill={f.color ?? def.color}
+              opacity={0.55}
+              stroke="#6b7280"
+              strokeWidth={1}
+              cornerRadius={2}
+            />
+            <Text
+              text={def.label}
+              x={-w / 2}
+              y={-4}
+              width={w}
+              align="center"
+              fontSize={9}
+              fill="#374151"
+              listening={false}
+            />
+          </Group>
+        );
+      });
+  }
+
   function renderWalls() {
     return walls.map((wall) => {
       const sv = livePos(wall.startId);
@@ -757,7 +815,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
                 const { [v.id]: _removed, ...newVertices } = plan.vertices;
                 const newWalls = Object.fromEntries(
                   Object.entries(plan.walls)
-                    .map(([wid, w]) => [
+                    .map(([wid, w]): [string, typeof w] => [
                       wid,
                       {
                         ...w,
@@ -946,6 +1004,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
           {renderGrid()}
           {renderGhostFloor()}
           {renderRooms()}
+          {renderFurniture()}
           {renderWalls()}
           {renderOpenings()}
           {renderVertices()}
