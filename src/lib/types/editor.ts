@@ -1,2 +1,2 @@
 export type ViewMode = "canvas" | "3d";
-export type DrawingTool = "select" | "wall" | "room" | "door" | "window";
+export type DrawingTool = "select" | "area" | "wall" | "rect" | "room" | "door" | "window";

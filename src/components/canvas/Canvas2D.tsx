@@ -61,6 +61,19 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
   const [roomDraft, setRoomDraft] = useState<RoomDraft | null>(null);
   const [selected, setSelected] = useState<SelectedElement>(null);
   const [wallHighlight, setWallHighlight] = useState<WallHighlight>(null);
+  const [dragPreview, setDragPreview] = useState<{ vertexId: string; x: number; y: number } | null>(null);
+  const [rectDraft, setRectDraft] = useState<{ x: number; y: number } | null>(null);
+  const [areaAnchor, setAreaAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [multiSelected, setMultiSelected] = useState<string[]>([]);
+  const [multiDragDelta, setMultiDragDelta] = useState<{ dx: number; dy: number } | null>(null);
+  const multiDragStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Clear drafts when tool switches
+  useEffect(() => {
+    if (tool !== "rect") setRectDraft(null);
+    if (tool !== "area") setAreaAnchor(null);
+    if (tool !== "area" && tool !== "select") setMultiSelected([]);
+  }, [tool]);
 
   // Resize observer
   useEffect(() => {
@@ -101,6 +114,15 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
     return { x: grid.x, y: grid.y, snapVertexId: null };
   }
 
+  function livePos(id: string): { x: number; y: number } {
+    if (dragPreview && dragPreview.vertexId === id) return dragPreview;
+    const v = plan.vertices[id];
+    if (multiDragDelta && multiSelected.includes(id) && v) {
+      return { x: v.x + multiDragDelta.dx, y: v.y + multiDragDelta.dy };
+    }
+    return v;
+  }
+
   // ---------- Mouse move ----------
   function handleMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
     const raw = stageToCanvas(e);
@@ -117,6 +139,10 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
       const snap = findClosestWall(floorPlan, raw.x, raw.y, WALL_SNAP_DIST_PX);
       setWallHighlight(snap);
       setCursor(raw);
+    } else if (tool === "rect" || tool === "area") {
+      const snapped = getSnapped(raw.x, raw.y);
+      setCursor(snapped);
+      setWallHighlight(null);
     } else {
       const snapped = getSnapped(raw.x, raw.y);
       setCursor(snapped);
@@ -135,9 +161,10 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
     const shift = (e.evt as MouseEvent).shiftKey;
 
     if (tool === "wall") handleWallClick(raw, shift, e);
+    else if (tool === "rect") handleRectClick(raw);
     else if (tool === "door" || tool === "window") handleOpeningClick(raw, tool);
     else if (tool === "room") handleRoomClick(raw);
-    else if (tool === "select" && isBackground) setSelected(null);
+    else if (tool === "select" && isBackground) { setSelected(null); setMultiSelected([]); }
   }
 
   // ---- Wall tool ----
@@ -298,9 +325,69 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
     );
   }
 
+  // ---- Rect tool ----
+  function handleRectClick(raw: Point) {
+    const snapped = getSnapped(raw.x, raw.y);
+    if (!rectDraft) {
+      setRectDraft({ x: snapped.x, y: snapped.y });
+      return;
+    }
+
+    const x1 = rectDraft.x, y1 = rectDraft.y;
+    const x2 = snapped.x, y2 = snapped.y;
+    if (Math.abs(x2 - x1) < 2 || Math.abs(y2 - y1) < 2) { setRectDraft(null); return; }
+
+    const v0id = nanoid(), v1id = nanoid(), v2id = nanoid(), v3id = nanoid();
+    const w0id = nanoid(), w1id = nanoid(), w2id = nanoid(), w3id = nanoid();
+    const newVertices = {
+      ...plan.vertices,
+      [v0id]: { id: v0id, x: x1, y: y1, floor: activeFloor },
+      [v1id]: { id: v1id, x: x2, y: y1, floor: activeFloor },
+      [v2id]: { id: v2id, x: x2, y: y2, floor: activeFloor },
+      [v3id]: { id: v3id, x: x1, y: y2, floor: activeFloor },
+    };
+    const newWalls = {
+      ...plan.walls,
+      [w0id]: { id: w0id, startId: v0id, endId: v1id, thickness: 0.2, floor: activeFloor },
+      [w1id]: { id: w1id, startId: v1id, endId: v2id, thickness: 0.2, floor: activeFloor },
+      [w2id]: { id: w2id, startId: v2id, endId: v3id, thickness: 0.2, floor: activeFloor },
+      [w3id]: { id: w3id, startId: v3id, endId: v0id, thickness: 0.2, floor: activeFloor },
+    };
+    onPlanChange({ ...plan, vertices: newVertices, walls: newWalls });
+    setRectDraft(null);
+    onToolChange("select");
+  }
+
+  function handleStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
+    if (tool !== "area") return;
+    const isBackground = e.target === e.target.getStage() || e.target.name() === "grid-bg";
+    if (!isBackground) return;
+    const raw = stageToCanvas(e);
+    setAreaAnchor({ x: raw.x, y: raw.y });
+    setMultiSelected([]);
+  }
+
+  function handleStageMouseUp(e: Konva.KonvaEventObject<MouseEvent>) {
+    if (tool !== "area" || !areaAnchor) return;
+    const raw = stageToCanvas(e);
+    const x1 = Math.min(areaAnchor.x, raw.x);
+    const x2 = Math.max(areaAnchor.x, raw.x);
+    const y1 = Math.min(areaAnchor.y, raw.y);
+    const y2 = Math.max(areaAnchor.y, raw.y);
+    if (x2 - x1 > 4 && y2 - y1 > 4) {
+      const ids = vertices
+        .filter((v) => v.x >= x1 && v.x <= x2 && v.y >= y1 && v.y <= y2)
+        .map((v) => v.id);
+      setMultiSelected(ids);
+    }
+    setAreaAnchor(null);
+    onToolChange("select");
+  }
+
   function handleDblClick() {
     setWallDraft(null);
     setRoomDraft(null);
+    setRectDraft(null);
   }
 
   // Wheel zoom
@@ -367,7 +454,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
 
     for (const room of ghostRooms) {
       const pts = room.vertexIds
-        .map((id) => plan.vertices[id])
+        .map((id) => livePos(id))
         .filter(Boolean)
         .flatMap((v) => [v.x, v.y]);
       if (pts.length < 6) continue;
@@ -385,8 +472,8 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
     }
 
     for (const wall of ghostWalls) {
-      const sv = plan.vertices[wall.startId];
-      const ev = plan.vertices[wall.endId];
+      const sv = livePos(wall.startId);
+      const ev = livePos(wall.endId);
       if (!sv || !ev) continue;
       const thick = wall.thickness * GRID_PX;
       const rect = wallRect(sv.x, sv.y, ev.x, ev.y, thick);
@@ -422,7 +509,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
   function renderRooms() {
     return Object.values(plan.rooms).filter((r) => (r.floor ?? 0) === activeFloor).map((room) => {
       const pts = room.vertexIds
-        .map((id) => plan.vertices[id])
+        .map((id) => livePos(id))
         .filter(Boolean)
         .flatMap((v) => [v.x, v.y]);
       if (pts.length < 6) return null;
@@ -462,8 +549,8 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
 
   function renderWalls() {
     return walls.map((wall) => {
-      const sv = plan.vertices[wall.startId];
-      const ev = plan.vertices[wall.endId];
+      const sv = livePos(wall.startId);
+      const ev = livePos(wall.endId);
       if (!sv || !ev) return null;
       const thick = wall.thickness * GRID_PX;
       const rect = wallRect(sv.x, sv.y, ev.x, ev.y, thick);
@@ -506,8 +593,8 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
       .map((opening) => {
       const wall = walls.find((w) => w.id === opening.wallId);
       if (!wall) return null;
-      const sv = plan.vertices[wall.startId];
-      const ev = plan.vertices[wall.endId];
+      const sv = livePos(wall.startId);
+      const ev = livePos(wall.endId);
       if (!sv || !ev) return null;
 
       const cx = sv.x + (ev.x - sv.x) * opening.position;
@@ -606,27 +693,99 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
   function renderVertices() {
     return vertices.map((v) => {
       const isSelected = selected?.type === "vertex" && selected.id === v.id;
+      const isMulti = multiSelected.includes(v.id);
+      const isAreaTool = tool === "area";
       return (
         <Circle
           key={v.id}
           x={v.x}
           y={v.y}
-          radius={4}
-          fill={isSelected ? "#3b82f6" : "#6b7280"}
+          radius={isMulti ? 5 : 4}
+          fill={isMulti ? "#8b5cf6" : isSelected ? "#3b82f6" : "#6b7280"}
           stroke="#fff"
-          strokeWidth={1.5}
-          onClick={(e) => { e.cancelBubble = true; setSelected({ type: "vertex", id: v.id }); }}
-          draggable={tool === "select"}
+          strokeWidth={isMulti ? 2 : 1.5}
+          onClick={(e) => {
+            e.cancelBubble = true;
+            if (isAreaTool) {
+              // Toggle individual vertex in/out of multiSelected
+              setMultiSelected((prev) =>
+                prev.includes(v.id) ? prev.filter((id) => id !== v.id) : [...prev, v.id]
+              );
+            } else {
+              setSelected({ type: "vertex", id: v.id });
+            }
+          }}
+          draggable={tool === "select" || (tool === "area" && isMulti)}
+          onDragMove={(e) => {
+            const stage = stageRef.current!;
+            const pos = stage.getPointerPosition()!;
+            const scale = stage.scaleX();
+            const offset = stage.position();
+            const rawX = (pos.x - offset.x) / scale;
+            const rawY = (pos.y - offset.y) / scale;
+            if (isMulti && multiSelected.length > 1) {
+              if (!multiDragStartRef.current) multiDragStartRef.current = { x: rawX, y: rawY };
+              setMultiDragDelta({
+                dx: rawX - multiDragStartRef.current.x,
+                dy: rawY - multiDragStartRef.current.y,
+              });
+            } else {
+              const snapped = getSnapped(rawX, rawY, [v.id]);
+              setDragPreview({ vertexId: v.id, x: snapped.x, y: snapped.y });
+            }
+          }}
           onDragEnd={(e) => {
-            const snapped = getSnapped(e.target.x(), e.target.y(), [v.id]);
-            onPlanChange({
-              ...plan,
-              vertices: { ...plan.vertices, [v.id]: { ...v, x: snapped.x, y: snapped.y } },
-            });
+            if (isMulti && multiSelected.length > 1 && multiDragDelta) {
+              const newVertices = { ...plan.vertices };
+              for (const id of multiSelected) {
+                if (newVertices[id]) {
+                  newVertices[id] = {
+                    ...newVertices[id],
+                    x: newVertices[id].x + multiDragDelta.dx,
+                    y: newVertices[id].y + multiDragDelta.dy,
+                  };
+                }
+              }
+              multiDragStartRef.current = null;
+              setMultiDragDelta(null);
+              onPlanChange(recalcRoomAreas({ ...plan, vertices: newVertices }));
+            } else {
+              const snapped = getSnapped(e.target.x(), e.target.y(), [v.id]);
+              setDragPreview(null);
+              if (snapped.snapVertexId && snapped.snapVertexId !== v.id) {
+                const targetId = snapped.snapVertexId;
+                const { [v.id]: _removed, ...newVertices } = plan.vertices;
+                const newWalls = Object.fromEntries(
+                  Object.entries(plan.walls)
+                    .map(([wid, w]) => [
+                      wid,
+                      {
+                        ...w,
+                        startId: w.startId === v.id ? targetId : w.startId,
+                        endId: w.endId === v.id ? targetId : w.endId,
+                      },
+                    ])
+                    .filter(([, w]) => w.startId !== w.endId)
+                );
+                const newRooms = Object.fromEntries(
+                  Object.entries(plan.rooms).map(([rid, r]) => [
+                    rid,
+                    { ...r, vertexIds: r.vertexIds.map((id) => (id === v.id ? targetId : id)) },
+                  ])
+                );
+                onPlanChange(recalcRoomAreas({ ...plan, vertices: newVertices, walls: newWalls, rooms: newRooms }));
+                setSelected(null);
+              } else {
+                onPlanChange({
+                  ...plan,
+                  vertices: { ...plan.vertices, [v.id]: { ...v, x: snapped.x, y: snapped.y } },
+                });
+              }
+            }
           }}
           onMouseEnter={(e) => {
             e.target.getStage()!.container().style.cursor =
-              tool === "select" ? "move" : tool === "wall" || tool === "room" ? "crosshair" : "default";
+              tool === "select" || (tool === "area" && isMulti) ? "move" : tool === "wall" || tool === "room" ? "crosshair" : "default";
           }}
           onMouseLeave={(e) => {
             e.target.getStage()!.container().style.cursor = "default";
@@ -678,6 +837,42 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
     );
   }
 
+  function renderAreaDraft() {
+    if (!areaAnchor) return null;
+    const x = Math.min(areaAnchor.x, cursor.x);
+    const y = Math.min(areaAnchor.y, cursor.y);
+    const w = Math.abs(cursor.x - areaAnchor.x);
+    const h = Math.abs(cursor.y - areaAnchor.y);
+    return (
+      <Line
+        points={[x, y, x + w, y, x + w, y + h, x, y + h]}
+        closed
+        stroke="#8b5cf6"
+        strokeWidth={1}
+        dash={[5, 3]}
+        fill="#8b5cf620"
+        listening={false}
+      />
+    );
+  }
+
+  function renderRectDraft() {
+    if (!rectDraft) return null;
+    const x1 = rectDraft.x, y1 = rectDraft.y;
+    const x2 = cursor.x, y2 = cursor.y;
+    return (
+      <Line
+        points={[x1, y1, x2, y1, x2, y2, x1, y2]}
+        closed
+        stroke="#3b82f6"
+        strokeWidth={1.5}
+        dash={[6, 4]}
+        fill="#3b82f620"
+        listening={false}
+      />
+    );
+  }
+
   function renderWallHighlight() {
     if (!wallHighlight) return null;
     return (
@@ -709,6 +904,10 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
 
   const hints: Record<DrawingTool, string> = {
     select: "Click to select • Drag vertex • Delete key removes • Scroll to zoom",
+    area: multiSelected.length > 0
+      ? `${multiSelected.length} vertices selected — drag any to move all`
+      : areaAnchor ? "Drag to select area" : "Drag to draw selection box",
+    rect: rectDraft ? "Click opposite corner to place rectangle" : "Click to set first corner",
     wall: wallDraft
       ? "Click end point • Shift = ortho lock • Dbl-click to cancel"
       : "Click to start wall",
@@ -723,12 +922,14 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
   };
 
   return (
-    <div ref={containerRef} className="relative w-full h-full" style={{ cursor: tool === "wall" || tool === "room" ? "crosshair" : "default" }}>
+    <div ref={containerRef} className="relative w-full h-full" style={{ cursor: tool === "wall" || tool === "room" || tool === "rect" || tool === "area" ? "crosshair" : "default" }}>
       <Stage
         ref={stageRef}
         width={size.w}
         height={size.h}
         draggable={tool === "select" && !selected}
+        onMouseDown={handleStageMouseDown}
+        onMouseUp={handleStageMouseUp}
         onMouseMove={handleMouseMove}
         onClick={handleClick}
         onDblClick={handleDblClick}
@@ -748,7 +949,9 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
           {renderWalls()}
           {renderOpenings()}
           {renderVertices()}
+          {renderAreaDraft()}
           {renderWallDraft()}
+          {renderRectDraft()}
           {renderRoomDraft()}
           {renderWallHighlight()}
           {renderCursorDot()}

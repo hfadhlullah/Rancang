@@ -24,6 +24,8 @@ import {
   Minus,
   DoorOpen,
   Square,
+  RectangleHorizontal,
+  BoxSelect,
   FileText,
   Camera,
   LayoutDashboard,
@@ -164,7 +166,9 @@ export function EditorShell({ projectId }: { projectId: string }) {
         dispatch({ type: "REDO" });
       }
       if (e.key === "Escape") setTool("select");
+      if (e.key === "a") setTool("area");
       if (e.key === "w") setTool("wall");
+      if (e.key === "s") setTool("rect");
       if (e.key === "d") setTool("door");
       if (e.key === "n") setTool("window");
       if (e.key === "r") setTool("room");
@@ -180,7 +184,9 @@ export function EditorShell({ projectId }: { projectId: string }) {
     key?: string;
   }[] = [
     { id: "select", icon: <MousePointer2 size={16} />, label: "Select", key: "Esc" },
+    { id: "area", icon: <BoxSelect size={16} />, label: "Area Select", key: "A" },
     { id: "wall", icon: <Minus size={16} />, label: "Wall", key: "W" },
+    { id: "rect", icon: <RectangleHorizontal size={16} />, label: "Rectangle", key: "S" },
     { id: "door", icon: <DoorOpen size={16} />, label: "Door", key: "D" },
     { id: "window", icon: <Square size={16} />, label: "Window", key: "N" },
     { id: "room", icon: <Layers size={16} />, label: "Room", key: "R" },
