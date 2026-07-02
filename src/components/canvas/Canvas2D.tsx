@@ -176,7 +176,9 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
   ) {
     const targetName = e.target.name();
     const isBackground = e.target === e.target.getStage() || targetName === "grid-bg";
-    if (!isBackground && !wallDraft) return;
+    // Allow starting walls inside rooms (room polygon is not "background" but click is valid)
+    const isRoom = targetName.startsWith("room-");
+    if (!isBackground && !isRoom && !wallDraft) return;
 
     if (!wallDraft) {
       const snapped = getSnapped(raw.x, raw.y);
@@ -518,6 +520,7 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
       return (
         <Line
           key={room.id}
+          name={`room-${room.id}`}
           closed
           points={pts}
           fill={room.color ?? "#dbeafe"}
@@ -525,7 +528,11 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange, activeFloor }
           stroke={isSelected ? "#3b82f6" : (room.color ?? "#dbeafe")}
           strokeWidth={isSelected ? 2.5 : 0}
           draggable={tool === "select"}
-          onClick={(e) => { e.cancelBubble = true; setSelected({ type: "room", id: room.id }); }}
+          onClick={(e) => {
+            if (tool !== "select" && tool !== "area") return; // wall/door/window/room tools fall through to stage
+            e.cancelBubble = true;
+            setSelected({ type: "room", id: room.id });
+          }}
           onMouseEnter={(e) => { if (tool === "select") e.target.getStage()!.container().style.cursor = "move"; }}
           onMouseLeave={(e) => { e.target.getStage()!.container().style.cursor = "default"; }}
           onDragStart={() => setSelected({ type: "room", id: room.id })}

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Plan, DEFAULT_PLAN } from "@/lib/types/plan";
+import { reconcileAutoRooms } from "@/lib/rooms/detectRooms";
 import { DrawingTool, ViewMode } from "@/lib/types/editor";
 import { CritiquePanel } from "@/components/critique/CritiquePanel";
 import { RequirementsForm } from "@/components/requirements/RequirementsForm";
@@ -149,6 +150,25 @@ export function EditorShell({ projectId }: { projectId: string }) {
     },
     [scheduleSave]
   );
+
+  // Auto-detect rooms from closed wall loops (2D canvas)
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  useEffect(() => {
+    if (!initialized) return;
+    const p = planRef.current;
+    const updated = reconcileAutoRooms(p);
+    const wallsSame = JSON.stringify(Object.keys(updated.walls).sort()) === JSON.stringify(Object.keys(p.walls).sort());
+    const roomsSame =
+      JSON.stringify(Object.keys(updated.rooms).sort()) === JSON.stringify(Object.keys(p.rooms).sort()) &&
+      Object.keys(updated.rooms).every((id) => {
+        const a = p.rooms[id], b = updated.rooms[id];
+        return a && JSON.stringify(a.vertexIds) === JSON.stringify(b.vertexIds);
+      });
+    if (wallsSame && roomsSame) return;
+    setPlan(updated);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan.walls, plan.vertices, initialized]);
 
   // Restore from snapshot — bypasses history to avoid giant undo stack
   const restorePlan = useCallback(
