@@ -25,8 +25,7 @@ export function createRequestyProvider(apiKey: string, defaultModel?: string): L
           }),
         });
       } catch (err: unknown) {
-        const name = err instanceof Error ? err.name : "";
-        if (name === "AbortError") throw new Error(`Requesty timeout after 120s (model: ${model})`);
+        if (controller.signal.aborted) throw new Error(`Requesty timeout after 120s (model: ${model}). Try a faster model like openai/gpt-4o-mini in Settings.`);
         throw err;
       } finally {
         clearTimeout(timeout);
