@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useConvexAuth } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
 export function CreateProjectDialog({ onClose }: { onClose: () => void }) {
   const createProject = useMutation(api.projects.create);
+  const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -15,7 +16,7 @@ export function CreateProjectDialog({ onClose }: { onClose: () => void }) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || !isAuthenticated) return;
     setLoading(true);
     try {
       const id = await createProject({ name: name.trim(), description: description.trim() || undefined });
@@ -63,7 +64,7 @@ export function CreateProjectDialog({ onClose }: { onClose: () => void }) {
             </button>
             <button
               type="submit"
-              disabled={loading || !name.trim()}
+              disabled={loading || !name.trim() || !isAuthenticated}
               className="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
               {loading ? "Creating…" : "Create project"}

@@ -194,7 +194,6 @@ export function Canvas2D({ plan, onPlanChange, tool, onToolChange }: Props) {
     };
     onPlanChange(newPlan);
     setWallDraft(null);
-    onToolChange("select");
   }
 
   // ---- Opening (door/window) tool ----
