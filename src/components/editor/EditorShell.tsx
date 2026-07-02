@@ -32,6 +32,7 @@ import {
   Sparkles,
   Settings,
   Hammer,
+  Trash2,
 } from "lucide-react";
 
 const Canvas2D = dynamic(
@@ -87,6 +88,10 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const router = useRouter();
   const project = useQuery(api.projects.get, { id: projectId as Id<"projects"> });
   const updateProject = useMutation(api.projects.update);
+  const removeProject = useMutation(api.projects.remove);
+
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
+  const [confirmDeleteFloor, setConfirmDeleteFloor] = useState(false);
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
   const [menu3DOpen, setMenu3DOpen] = useState(false);
@@ -235,6 +240,13 @@ export function EditorShell({ projectId }: { projectId: string }) {
           <ArrowLeft size={16} />
         </button>
         <span className="font-medium text-sm truncate max-w-[200px]">{project.name}</span>
+        <button
+          onClick={() => setConfirmDeleteProject(true)}
+          title="Delete project"
+          className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+        >
+          <Trash2 size={13} />
+        </button>
         <div className="flex-1" />
 
         {/* View toggle — 3D opens a View / Edit chooser */}
@@ -345,6 +357,15 @@ export function EditorShell({ projectId }: { projectId: string }) {
                 title="Add floor"
               >
                 +
+              </button>
+            )}
+            {viewMode === "canvas" && (plan.metadata.floors ?? 1) > 1 && (
+              <button
+                onClick={() => setConfirmDeleteFloor(true)}
+                title={`Delete floor ${activeFloor + 1}`}
+                className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+              >
+                <Trash2 size={11} />
               </button>
             )}
           </div>
@@ -473,6 +494,72 @@ export function EditorShell({ projectId }: { projectId: string }) {
           </aside>
         )}
       </div>
+
+      {/* Delete project confirmation */}
+      {confirmDeleteProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-background border rounded-xl shadow-xl p-6 w-80 flex flex-col gap-4">
+            <div className="font-semibold text-base">Delete project?</div>
+            <p className="text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">{project.name}</span> will be permanently deleted. This cannot be undone.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmDeleteProject(false)}
+                className="px-4 py-2 text-sm rounded-lg border hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  await removeProject({ id: projectId as Id<"projects"> });
+                  router.push("/dashboard");
+                }}
+                className="px-4 py-2 text-sm rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete floor confirmation */}
+      {confirmDeleteFloor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-background border rounded-xl shadow-xl p-6 w-80 flex flex-col gap-4">
+            <div className="font-semibold text-base">Delete Floor {activeFloor + 1}?</div>
+            <p className="text-sm text-muted-foreground">
+              All walls, rooms, openings and furniture on Floor {activeFloor + 1} will be removed permanently.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmDeleteFloor(false)}
+                className="px-4 py-2 text-sm rounded-lg border hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const f = activeFloor;
+                  const totalFloors = plan.metadata.floors ?? 1;
+                  const vertices = Object.fromEntries(Object.entries(plan.vertices).filter(([, v]) => (v.floor ?? 0) !== f));
+                  const walls = Object.fromEntries(Object.entries(plan.walls).filter(([, w]) => (w.floor ?? 0) !== f));
+                  const openings = Object.fromEntries(Object.entries(plan.openings).filter(([, o]) => (o.floor ?? 0) !== f));
+                  const rooms = Object.fromEntries(Object.entries(plan.rooms).filter(([, r]) => (r.floor ?? 0) !== f));
+                  const furniture = Object.fromEntries(Object.entries(plan.furniture ?? {}).filter(([, fu]) => (fu.floor ?? 0) !== f));
+                  setPlan({ ...plan, vertices, walls, openings, rooms, furniture, metadata: { ...plan.metadata, floors: totalFloors - 1 } });
+                  setActiveFloor(Math.max(0, f - 1));
+                  setConfirmDeleteFloor(false);
+                }}
+                className="px-4 py-2 text-sm rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+              >
+                Delete Floor
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
