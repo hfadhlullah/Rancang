@@ -34,6 +34,7 @@ import {
   Settings,
   Hammer,
   Trash2,
+  Clapperboard,
 } from "lucide-react";
 
 const Canvas2D = dynamic(
@@ -416,6 +417,14 @@ export function EditorShell({ projectId }: { projectId: string }) {
         <span className="text-xs text-muted-foreground w-12 text-right">
           {saving ? "Saving…" : "Saved"}
         </span>
+
+        <button
+          onClick={() => router.push(`/cinematic/${projectId}`)}
+          title="Cinematic tour — generate a room-tour video"
+          className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
+        >
+          <Clapperboard size={14} />
+        </button>
 
         <button
           onClick={() => router.push("/settings")}

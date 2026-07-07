@@ -93,6 +93,7 @@ export interface Furniture {
   rotation: number;
   color?: string; // hex override
   floor?: number; // 0-indexed, default 0
+  modelUrl?: string; // GLTF/GLB override, falls back to catalog def then procedural geometry
 }
 
 export interface PlanMetadata {

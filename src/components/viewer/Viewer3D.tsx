@@ -194,7 +194,7 @@ function FloorSlabs({ plan, wallHeight, viewFloor }: { plan: Plan; wallHeight: n
   );
 }
 
-function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
+export function Scene({ plan, viewFloor, hideLabels = false, hideGrid = false }: { plan: Plan; viewFloor: number | null; hideLabels?: boolean; hideGrid?: boolean }) {
   const ppm = plan.metadata.pixelsPerMeter;
   const wallHeight = plan.metadata.wallHeight;
 
@@ -306,7 +306,7 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
               side={THREE.DoubleSide}
             />
           </mesh>
-          <Html position={[centX, yOffset + 0.08, centZ]} center zIndexRange={[10, 0]}>
+          {!hideLabels && <Html position={[centX, yOffset + 0.08, centZ]} center zIndexRange={[10, 0]}>
             <div className="pointer-events-none select-none text-center" style={{ whiteSpace: "nowrap" }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: "#1e293b", background: "rgba(255,255,255,0.82)", padding: "1px 7px", borderRadius: 5, letterSpacing: "0.01em" }}>
                 {room.name}
@@ -317,11 +317,11 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
                 </div>
               )}
             </div>
-          </Html>
+          </Html>}
         </group>
       );
     });
-  }, [plan, wallHeight, viewFloor]);
+  }, [plan, wallHeight, viewFloor, hideLabels]);
 
   const hasContent = Object.keys(plan.walls).length > 0;
 
@@ -339,7 +339,7 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
       {walls}
       {cornerFills}
       {furniture}
-      <Grid
+      {!hideGrid && <Grid
         args={[50, 50]}
         position={[0, -0.001, 0]}
         cellSize={1}
@@ -349,7 +349,7 @@ function Scene({ plan, viewFloor }: { plan: Plan; viewFloor: number | null }) {
         sectionColor="#9ca3af"
         fadeDistance={40}
         infiniteGrid
-      />
+      />}
       {!hasContent && (
         // Empty state hint
         <group position={[5, 1, 5]}>

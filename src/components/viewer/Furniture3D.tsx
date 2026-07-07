@@ -3,6 +3,7 @@
 import { ThreeEvent } from "@react-three/fiber";
 import { Furniture } from "@/lib/types/plan";
 import { FURNITURE_BY_KIND } from "@/lib/furniture/catalog";
+import { GLTFFurniture } from "./GLTFFurniture";
 
 const METERS_PER_PX = 1 / 50;
 
@@ -26,6 +27,26 @@ export function Furniture3D({ item, yOffset, ghost, highlight, onPointerDown, on
   const mat = <meshStandardMaterial color={color} transparent={ghost} opacity={opacity} />;
   const woodMat = <meshStandardMaterial color={ghost || highlight ? color : "#8b6f4e"} transparent={ghost} opacity={opacity} />;
   const { w, d, h } = def;
+
+  const modelUrl = item.modelUrl ?? def.modelUrl;
+  if (modelUrl) {
+    return (
+      <group
+        position={[item.x * METERS_PER_PX, yOffset, item.y * METERS_PER_PX]}
+        rotation={[0, -item.rotation, 0]}
+      >
+        <GLTFFurniture
+          item={item}
+          def={def}
+          ghost={ghost}
+          highlight={highlight}
+          onPointerDown={onPointerDown}
+          onPointerOver={onPointerOver}
+          onPointerOut={onPointerOut}
+        />
+      </group>
+    );
+  }
 
   let body: React.ReactNode;
   switch (item.kind) {
